@@ -1,0 +1,2 @@
+Verbatim files from FF1Disassembly/ live here. They are never edited; the
+translator layer in src/app/ adapts them to the HAL in src/system/.
