@@ -8,8 +8,20 @@ literal writes to the NES PPU ports with JSRs into the HAL, so the original
 6502 code can drive our virtual PPU without any hand-patching.
 
 Substitutions (case-insensitive, whole-mnemonic match, comments preserved):
-    STA $2006  ->  JSR HAL_PPU_2006_Write
-    STA $2007  ->  JSR HAL_PPU_2007_Write
+    STA $2000  ->  JSR HAL_PPU_2000_Write   (PPUCTRL  -- host no-op)
+    STA $2001  ->  JSR HAL_PPU_2001_Write   (PPUMASK  -- host no-op)
+    STA $2005  ->  JSR HAL_PPU_2005_Write   (PPUSCROLL -- host no-op)
+    STA $2006  ->  JSR HAL_PPU_2006_Write   (PPUADDR latch)
+    STA $2007  ->  JSR HAL_PPU_2007_Write   (PPUDATA to nametable / palette)
+    STX $2006  ->  JSR HAL_PPU_2006_Write_X (X-sourced PPUADDR write)
+    STY $2006  ->  JSR HAL_PPU_2006_Write_Y (Y-sourced PPUADDR write)
+    STX $2007  ->  JSR HAL_PPU_2007_Write_X (X-sourced PPUDATA write)
+    STY $2007  ->  JSR HAL_PPU_2007_Write_Y (Y-sourced PPUDATA write)
+
+The _X / _Y variants exist because FF1 occasionally uses STX/STY against
+the PPU ports specifically to avoid disturbing A (e.g. DrawComplexString
+holds the character to draw in A while it latches the address via X).
+The wrappers preserve A across the call so the original invariant holds.
 
 Everything after a ';' on a line is left untouched so FF1's original
 annotations keep referring to "$2006" / "$2007" by name.
@@ -19,8 +31,15 @@ import re
 import sys
 
 PATTERNS = (
+    (re.compile(r"\bsta\s+\$2000\b", re.IGNORECASE), "JSR HAL_PPU_2000_Write"),
+    (re.compile(r"\bsta\s+\$2001\b", re.IGNORECASE), "JSR HAL_PPU_2001_Write"),
+    (re.compile(r"\bsta\s+\$2005\b", re.IGNORECASE), "JSR HAL_PPU_2005_Write"),
     (re.compile(r"\bsta\s+\$2006\b", re.IGNORECASE), "JSR HAL_PPU_2006_Write"),
     (re.compile(r"\bsta\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Write"),
+    (re.compile(r"\bstx\s+\$2006\b", re.IGNORECASE), "JSR HAL_PPU_2006_Write_X"),
+    (re.compile(r"\bsty\s+\$2006\b", re.IGNORECASE), "JSR HAL_PPU_2006_Write_Y"),
+    (re.compile(r"\bstx\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Write_X"),
+    (re.compile(r"\bsty\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Write_Y"),
 )
 
 

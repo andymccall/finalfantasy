@@ -40,8 +40,15 @@
 .import HAL_PalettePush
 
 .export HAL_PPUInit
+.export HAL_PPU_2000_Write
+.export HAL_PPU_2001_Write
+.export HAL_PPU_2005_Write
 .export HAL_PPU_2006_Write
+.export HAL_PPU_2006_Write_X
+.export HAL_PPU_2006_Write_Y
 .export HAL_PPU_2007_Write
+.export HAL_PPU_2007_Write_X
+.export HAL_PPU_2007_Write_Y
 .export ppu_nt_mirror
 .export palette_ram
 
@@ -88,6 +95,29 @@ ppu_addr_latch: .res 1                  ; 0 = next write is high byte
     stz palette_ram, x
     dex
     bpl @zap_pal
+    rts
+.endproc
+
+; $2000 (PPUCTRL) on a real NES selects the base nametable, VRAM
+; increment direction, sprite/BG pattern tables, sprite size, and the NMI
+; enable bit. Our virtual PPU only mirrors NT0 and always increments by
+; 1; sprites, NMI, and pattern-table selection are handled out-of-band.
+; So the hook is a no-op that consumes the write and preserves A/X/Y.
+.proc HAL_PPU_2000_Write
+    rts
+.endproc
+
+; $2001 (PPUMASK) controls rendering enable, monochrome, colour emphasis.
+; The host display is always on, so this hook is a no-op; A/X/Y preserved.
+.proc HAL_PPU_2001_Write
+    rts
+.endproc
+
+; $2005 (PPUSCROLL) latches X then Y scroll across two successive writes
+; on a real NES. FF1 writes it mainly to clear scroll after menu draws.
+; The host viewport doesn't scroll, so we swallow both halves as a no-op;
+; A/X/Y preserved.
+.proc HAL_PPU_2005_Write
     rts
 .endproc
 
@@ -164,5 +194,42 @@ ppu_addr_latch: .res 1                  ; 0 = next write is high byte
 @done:
     ply                                 ; restore caller's Y
     plx                                 ; restore caller's X
+    rts
+.endproc
+
+; X/Y-sourced variants of the PPU port hooks. FF1 uses STX/STY against
+; $2006/$2007 to avoid disturbing A (it holds the character being drawn).
+; These wrappers save A, route X or Y through A to the main hook, and
+; restore A on return so the original invariant -- NES store preserves
+; all registers -- survives.
+.proc HAL_PPU_2006_Write_X
+    pha
+    txa
+    jsr HAL_PPU_2006_Write
+    pla
+    rts
+.endproc
+
+.proc HAL_PPU_2006_Write_Y
+    pha
+    tya
+    jsr HAL_PPU_2006_Write
+    pla
+    rts
+.endproc
+
+.proc HAL_PPU_2007_Write_X
+    pha
+    txa
+    jsr HAL_PPU_2007_Write
+    pla
+    rts
+.endproc
+
+.proc HAL_PPU_2007_Write_Y
+    pha
+    tya
+    jsr HAL_PPU_2007_Write
+    pla
     rts
 .endproc

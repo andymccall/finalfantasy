@@ -14,6 +14,14 @@
 ;                         A = NES colour index (0..$3F), X = slot (0..31).
 ;                         Called from inside HAL_PPU_2007_Write's palette
 ;                         trap, so it must preserve A/X/Y.
+;   HAL_PPU_2000_Write -- emulate a byte write to PPUCTRL. Nametable base
+;   HAL_PPU_2001_Write    select, VRAM increment direction, sprite/BG
+;   HAL_PPU_2005_Write    pattern tables, NMI enable, rendering mask, and
+;                         X/Y scroll live behind these ports on a real
+;                         NES. The host virtual PPU doesn't emulate any
+;                         of those knobs, so all three hooks are no-ops
+;                         that consume A and preserve A/X/Y (the NES STA
+;                         invariant the hook script relies on).
 ;   HAL_PPU_2006_Write -- emulate a byte write to the NES PPU address port.
 ;                         Two successive calls latch a 14-bit address
 ;                         (high byte first, then low). A is the input byte.
@@ -29,6 +37,15 @@
 ;                             HAL_PalettePush
 ;                         Then auto-increments the address. A/X/Y preserved
 ;                         (same reason as HAL_PPU_2006_Write).
+;   HAL_PPU_2006_Write_X -- X-sourced variants of the PPUADDR/PPUDATA hooks.
+;   HAL_PPU_2006_Write_Y    FF1 uses STX/STY against $2006/$2007 to avoid
+;   HAL_PPU_2007_Write_X    disturbing A (e.g. DrawComplexString holds the
+;   HAL_PPU_2007_Write_Y    character being drawn in A while latching the
+;                           target address through X). The wrappers save A,
+;                           route X or Y through A into the main hook, and
+;                           restore A on return, so the NES "store preserves
+;                           all registers" invariant holds for these callers
+;                           too.
 ;   HAL_LoadTiles      -- push the build-time-converted FF1 font into the
 ;                         host's tile/character memory. Subsequent mirror
 ;                         bytes within the font's source range render with
@@ -38,6 +55,13 @@
 .import HAL_Init
 .import HAL_WaitVblank
 .import HAL_PalettePush
+.import HAL_PPU_2000_Write
+.import HAL_PPU_2001_Write
+.import HAL_PPU_2005_Write
 .import HAL_PPU_2006_Write
+.import HAL_PPU_2006_Write_X
+.import HAL_PPU_2006_Write_Y
 .import HAL_PPU_2007_Write
+.import HAL_PPU_2007_Write_X
+.import HAL_PPU_2007_Write_Y
 .import HAL_LoadTiles

@@ -43,7 +43,12 @@ NEO_FONT       := $(BUILDDIR)/neo/font_converted.bin
 # and .includes the generated file.
 HOOK_SCRIPT    := $(SCRIPTDIR)/hook_ppu.py
 CORE_HOOKED_SRCS = $(SRCDIR)/core/title_copyright.asm \
-                   $(SRCDIR)/core/draw_palette.asm
+                   $(SRCDIR)/core/draw_palette.asm \
+                   $(SRCDIR)/core/coord_to_nt_addr.asm \
+                   $(SRCDIR)/core/nt_row_luts.asm \
+                   $(SRCDIR)/core/draw_box.asm \
+                   $(SRCDIR)/core/menu_cond_stall.asm \
+                   $(SRCDIR)/core/draw_complex_string.asm
 CORE_HOOKED_INCS = $(patsubst $(SRCDIR)/core/%.asm,$(BUILDDIR)/core/%.inc,$(CORE_HOOKED_SRCS))
 
 # --- Shared sources (platform-agnostic) ------------------------------------
@@ -80,6 +85,8 @@ $(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT)
 
 $(BUILDDIR)/x16/app/title_copyright_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/draw_palette_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/box_drawing_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
 
 $(X16_OUT): $(X16_OBJS) $(X16_CFG)
 	@mkdir -p $(dir $@)
@@ -99,6 +106,8 @@ $(BUILDDIR)/neo/%.o: $(SRCDIR)/%.asm $(NEO_FONT)
 
 $(BUILDDIR)/neo/app/title_copyright_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/draw_palette_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/box_drawing_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
 
 $(NEO_RAW): $(NEO_OBJS) $(NEO_CFG)
 	@mkdir -p $(dir $@)
