@@ -76,6 +76,18 @@ flush_col: .res 1
     ; $C0..$FF; remap those nametable bytes so the console renders our
     ; glyph instead of its built-in ROM font glyph. Bytes outside this
     ; range pass through unchanged (e.g. $20 still hits the space).
+    ;
+    ; $FF is a special case: FF1 uses it as its blank/space tile. It sits
+    ; above our remap range, so without a hand-off it would pass through
+    ; and hit Neo user-font slot $FF -- which now holds the FF1 glyph
+    ; uploaded into our top slot (FF1 tile $BF, a punctuation mark on
+    ; screen). Short-circuit it to ASCII $20 so the console prints a real
+    ; space.
+    cmp #$FF
+    bne @check_font
+    lda #$20
+    bra @xlat_done
+@check_font:
     cmp #$C0
     bcs @xlat_done
     cmp #$80

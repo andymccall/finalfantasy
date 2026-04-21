@@ -1,23 +1,25 @@
 ; ---------------------------------------------------------------------------
-; palette.asm - Commander X16 HAL_UploadPalette implementation.
+; palette.asm - Commander X16 HAL_PalettePush implementation.
 ; ---------------------------------------------------------------------------
-; cur_pal holds 32 bytes of NES colour indices (one per logical palette
-; slot). Each index is translated to a VERA 12-bit RGB word via a fixed
-; 64-entry LUT, then written to VERA palette RAM at $1FA00 (colours 0-31).
+; Called by the virtual PPU every time FF1 writes a byte in the $3F00..$3F1F
+; palette window. Translates the NES colour index in A to a VERA 12-bit RGB
+; word via a fixed 64-entry LUT, and pokes it into VERA palette RAM at
+; $1FA00 + X*2 (so slot X ends up at VERA palette index X, matching the
+; NES's 0..31 slot layout).
 ;
 ; VERA palette RAM format: two bytes per colour, little-endian, $0RGB
 ; (high nibble of byte 0 = G, low nibble of byte 0 = B, low nibble of
-; byte 1 = R). Auto-increment is enabled so successive stores to $9F23
-; walk the palette cursor for us.
+; byte 1 = R).
+;
+; Contract: A = NES colour index (0..$3F), X = slot (0..31). A/X/Y must be
+; preserved -- the PPU trap calls this mid-instruction and surrounding
+; NES code assumes STA $2007 doesn't clobber registers.
 ;
 ; Conversion is LUT-driven rather than arithmetic because the NES palette
-; is NTSC-phase-based and has no clean RGB formula; on-the-fly maths in
-; a 6502 vblank would also be ruinously slow.
+; is NTSC-phase-based and has no clean RGB formula.
 ; ---------------------------------------------------------------------------
 
-.import cur_pal
-
-.export HAL_UploadPalette
+.export HAL_PalettePush
 
 ; --- VERA registers --------------------------------------------------------
 VERA_ADDR_L = $9F20
@@ -29,27 +31,34 @@ VERA_DATA0  = $9F23
 
 .segment "CODE"
 
-.proc HAL_UploadPalette
-    ; Point VERA at $1FA00 with auto-increment of 1.
-    stz VERA_ADDR_L             ; $00
-    lda #$FA                    ; $FA
+.proc HAL_PalettePush
+    phx                                 ; save caller's X (palette slot)
+    phy                                 ; save caller's Y
+    pha                                 ; save caller's A (NES colour)
+
+    ; --- point VERA at $1FA00 + slot*2, auto-increment +1 ------------------
+    txa
+    asl                                 ; slot * 2
+    sta VERA_ADDR_L
+    lda #$FA
     sta VERA_ADDR_M
-    lda #$11                    ; bit16=1, increment=1
+    lda #$11                            ; bit16=1, stride=+1
     sta VERA_ADDR_H
 
-    ldy #0                      ; cur_pal walker
-@loop:
-    lda cur_pal, y              ; NES colour index (0..$3F)
-    and #$3F                    ; mask off NES "emphasis" bits if present
-    asl a                       ; index * 2 (two bytes per LUT entry)
+    ; --- look up VERA RGB word and write both bytes ------------------------
+    pla                                 ; A = NES colour
+    pha                                 ; keep a copy for the caller
+    and #$3F                            ; mask NES emphasis bits
+    asl                                 ; * 2 (two bytes per LUT entry)
     tax
-    lda nes_to_vera_lut, x      ; low byte  (GB)
+    lda nes_to_vera_lut, x              ; low byte  (GB)
     sta VERA_DATA0
-    lda nes_to_vera_lut+1, x    ; high byte (0R)
+    lda nes_to_vera_lut+1, x            ; high byte (0R)
     sta VERA_DATA0
-    iny
-    cpy #32
-    bne @loop
+
+    pla                                 ; restore caller's A
+    ply                                 ; restore caller's Y
+    plx                                 ; restore caller's X
     rts
 .endproc
 
