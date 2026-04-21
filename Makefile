@@ -22,7 +22,8 @@ RELEASEDIR = release
 
 # --- Shared sources (platform-agnostic) ------------------------------------
 SHARED_SRCS = $(wildcard $(SRCDIR)/app/*.asm) \
-              $(wildcard $(SRCDIR)/core/*.asm)
+              $(wildcard $(SRCDIR)/core/*.asm) \
+              $(wildcard $(SRCDIR)/system/*.asm)
 
 # --- Commander X16 ---------------------------------------------------------
 X16_SRCS = $(wildcard $(SRCDIR)/system/x16/*.asm)

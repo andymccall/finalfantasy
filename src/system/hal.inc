@@ -17,9 +17,19 @@
 ;   HAL_ShowPaletteStrip -- paint a horizontal strip of solid cells/rects,
 ;                         one per uploaded palette slot, so the NES->host
 ;                         mapping can be verified visually. Clobbers A/X/Y.
+;   HAL_PPU_2006_Write -- emulate a byte write to the NES PPU address port.
+;                         Two successive calls latch a 14-bit address
+;                         (high byte first, then low). A is the input byte.
+;                         Clobbers A/X/Y.
+;   HAL_PPU_2007_Write -- emulate a byte write to the NES PPU data port.
+;                         Stores A into the 2KB nametable mirror at the
+;                         current latched address, then auto-increments.
+;                         Clobbers A/X/Y.
 ; ---------------------------------------------------------------------------
 
 .import HAL_Init
 .import HAL_WaitVblank
 .import HAL_UploadPalette
 .import HAL_ShowPaletteStrip
+.import HAL_PPU_2006_Write
+.import HAL_PPU_2007_Write

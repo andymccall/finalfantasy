@@ -2,14 +2,13 @@
 ; main.asm - Application entry point.
 ; ---------------------------------------------------------------------------
 ; Called once per boot by the platform's STARTUP segment. Initialises the
-; HAL, pushes a test palette to the display via the FF1 DrawPalette leaf,
-; then runs the main game loop (one iteration per vertical blank).
+; HAL, then simulates an NES program that writes a single tile byte into
+; the PPU nametable at address $2042 (row 2, column 2). The HAL intercepts
+; the PPU register writes, stores the byte in the 2KB nametable mirror,
+; and the vblank handler flushes the mirror to the host display each frame.
 ; ---------------------------------------------------------------------------
 
 .include "system/hal.inc"
-
-.import LoadTestPalette
-.import DrawPalette
 
 .export main
 
@@ -17,9 +16,15 @@
 
 .proc main
     jsr HAL_Init
-    jsr LoadTestPalette         ; stage 32 NES colour indices in cur_pal
-    jsr DrawPalette             ; FF1 leaf -> HAL_UploadPalette
-    jsr HAL_ShowPaletteStrip    ; visual verification of NES->host mapping
+
+    ; --- simulated NES code: STA to $2006/$2006/$2007 -----------------------
+    lda #$20
+    jsr HAL_PPU_2006_Write          ; PPU address high byte
+    lda #$42
+    jsr HAL_PPU_2006_Write          ; PPU address low byte -> $2042
+    lda #'A'
+    jsr HAL_PPU_2007_Write          ; store tile byte; address auto-increments
+
 @loop:
     jsr HAL_WaitVblank
     jmp @loop

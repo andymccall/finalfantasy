@@ -5,15 +5,18 @@
 ; SEI guards the poll so the KERNAL IRQ handler (which also acks VSYNC)
 ; cannot race us, then CLI lets it catch up on keyboard / jiffy.
 ;
-; Visible heartbeat: after each vblank the top-left text cell is rewritten
-; with the next glyph by poking VRAM $1B000 directly, giving a one-cell
-; flicker locked to the display refresh.
+; On init the text layer map is cleared to (char=0, attr=$01) so any later
+; flush of the PPU nametable mirror paints into a known background. After
+; each vblank the HAL copies the 32x30 visible region of the mirror into
+; the VERA text layer.
 ;
 ; Chaining the KERNAL IRQ vector at $0314 is avoided because the IRQ target
 ; lives behind ROM-bank switching that the application does not control.
 ; ---------------------------------------------------------------------------
 
 .import main
+.import HAL_PPUInit
+.import HAL_FlushNametable
 
 .export HAL_Init
 .export HAL_WaitVblank
@@ -48,38 +51,43 @@ basic_stub_end:
 
 ; ---------------------------------------------------------------------------
 
-.segment "BSS"
-
-heartbeat_char:  .res 1
-
-; ---------------------------------------------------------------------------
-
 .segment "CODE"
 
 .proc HAL_Init
-    stz VERA_CTRL               ; DCSEL=0, ADDRSEL=0 (use ADDR0/DATA0)
-    stz heartbeat_char
+    stz VERA_CTRL                       ; DCSEL=0, ADDRSEL=0
+
+    ; --- clear the text layer map ($1:B000..$1:EFFF, 16 KiB) ----------------
+    stz VERA_ADDR_L
+    lda #$B0
+    sta VERA_ADDR_M
+    lda #$11                            ; bit16=1, stride=+1
+    sta VERA_ADDR_H
+
+    ldx #$20                            ; $20 outer iterations * 256 cells
+@page:
+    ldy #0
+@cell:
+    stz VERA_DATA0                      ; char = $00
+    lda #$01
+    sta VERA_DATA0                      ; attr = white fg on black bg
+    iny
+    bne @cell
+    dex
+    bne @page
+
+    jsr HAL_PPUInit
     rts
 .endproc
 
 .proc HAL_WaitVblank
-    sei                         ; block KERNAL IRQ so it can't ack VSYNC behind us
+    sei                                 ; block KERNAL IRQ so it can't ack VSYNC behind us
     lda #$01
-    sta VERA_ISR                ; clear any stale VSYNC flag
+    sta VERA_ISR                        ; clear any stale VSYNC flag
 @wait:
-    bit VERA_ISR                ; BIT sets Z from (A & mem); A=$01 tests bit 0
+    bit VERA_ISR
     beq @wait
-    cli                         ; let KERNAL catch up on keyboard / jiffy
+    cli                                 ; let KERNAL catch up on keyboard / jiffy
 
-    ; Point VERA at VRAM $1B000 -- screen cell (0,0), character byte.
-    stz VERA_ADDR_L
-    lda #$B0
-    sta VERA_ADDR_M
-    lda #$01                    ; bit16=1, no auto-increment
-    sta VERA_ADDR_H
-
-    inc heartbeat_char
-    lda heartbeat_char
-    sta VERA_DATA0
+    jsr HAL_FlushNametable
     rts
 .endproc
