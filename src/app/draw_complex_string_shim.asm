@@ -61,16 +61,33 @@ BANK_MENUS = $00
 
 .segment "RODATA"
 
-; Placeholder LUTs. lut_DTE1/lut_DTE2 are indexed by (char - $1A) for chars
-; in $1A..$79, and lut_ItemNamePtrTbl is indexed by (item_id * 2) for 8-bit
-; item IDs. Title-screen strings stay in the $7A+ plain-tile range and use
-; no control codes, so none of these are actually read -- they exist so the
-; linker can resolve the symbols and so any accidental overrun goes to
-; deterministic zeroes.
+; FF1's DTE tables (Dual-Tile Encoding). Indexed by (char - $1A) for chars
+; in $1A..$69. Each byte in the source text that falls in that range expands
+; to a pair of tiles: lut_DTE1[idx] drawn first, then lut_DTE2[idx]. Copied
+; byte-for-byte from bank_0F.asm:11303-11315. Bytes $6A..$79 also route
+; through DTE but the original comment notes that range "will draw crap" --
+; we pad to the full $60 range with $FF (blank-space tile) so overruns
+; stay visually inert instead of drawing whatever the next RODATA byte is.
+;
+; lut_ItemNamePtrTbl is indexed by item_id * 2 (8-bit item IDs). The intro
+; story and title screen never reach a control code that consults it, so
+; zeros are fine.
 lut_DTE1:
-    .res $60
+    .byte $A8,$FF,$B7,$AB, $B6,$AC,$FF,$B7, $A4,$B5,$FF,$A8, $B2,$A7,$B7,$B1
+    .byte $B1,$A8,$A8,$FF, $B2,$A4,$AC,$FF, $B9,$FF,$B0,$B2, $FF,$B6,$FF,$A4
+    .byte $A8,$B1,$B2,$AB, $B6,$A4,$A8,$AB, $FF,$FF,$B5,$AF, $B2,$AA,$A6,$B2
+    .byte $90,$BC,$B2,$B5, $AF,$FF,$FF,$A6, $96,$B7,$A9,$B8, $BC,$B7,$AF,$FF
+    .byte $B1,$AC,$B5,$BA, $A4,$A4,$BA,$AC, $A5,$B5,$B8,$FF, $AA,$FF,$AF,$C3
+    .res  $60 - 80, $FF
+
 lut_DTE2:
-    .res $60
+    .byte $FF,$B7,$AB,$A8, $FF,$B1,$A4,$FF, $B1,$A8,$B6,$B5, $B8,$FF,$B2,$FF
+    .byte $AA,$A4,$B6,$AC, $FF,$B5,$B6,$A5, $A8,$BA,$A8,$B5, $B2,$B7,$A6,$B7
+    .byte $B1,$A7,$B1,$AC, $A8,$B6,$A7,$A4, $B0,$A9,$FF,$A8, $BA,$FF,$A8,$B0
+    .byte $92,$FF,$A9,$B2, $AF,$B3,$BC,$A4, $8A,$A8,$FF,$B5, $B2,$AC,$FF,$AB
+    .byte $A8,$B7,$AC,$A4, $A6,$AF,$A8,$AF, $A8,$B6,$FF,$AF, $A8,$A7,$AC,$C3
+    .res  $60 - 80, $FF
+
 lut_ItemNamePtrTbl:
     .res $200
 

@@ -78,6 +78,7 @@
 .export IntroTitlePrepare
 .export WaitForVBlank_L
 .export ClearNT
+.export TurnMenuScreenOn_ClearOAM
 
 ; Joypad direction bit (from FF1's Constants.inc).
 RIGHT = $01

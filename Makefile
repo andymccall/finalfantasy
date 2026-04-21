@@ -35,6 +35,14 @@ CHR_SCRIPT     := $(SCRIPTDIR)/chr_convert.py
 X16_FONT       := $(BUILDDIR)/x16/font_converted.bin
 NEO_FONT       := $(BUILDDIR)/neo/font_converted.bin
 
+# The intro story text is a 224-byte format-coded blob FF1 ships in
+# bin/0D_BF20_introtext.bin. lut_IntroStoryText INCBIN's it through the
+# ca65 --bin-include-dir, so the blob has to be reachable under that
+# dir. Staging a copy keeps the pristine disassembly tree untouched.
+FF1_INTRO_SRC   := $(FF1_DIS_ROOT)/bin/0D_BF20_introtext.bin
+X16_INTRO_BIN   := $(BUILDDIR)/x16/introtext.bin
+NEO_INTRO_BIN   := $(BUILDDIR)/neo/introtext.bin
+
 # --- Core routines hooked through scripts/hook_ppu.py ----------------------
 # Files listed here are verbatim FF1 extracts. They have no ca65 directives
 # and no HAL imports, so the wildcard compile rule would fail on them. The
@@ -52,7 +60,10 @@ CORE_HOOKED_SRCS = $(SRCDIR)/core/title_copyright.asm \
                    $(SRCDIR)/core/title_screen.asm \
                    $(SRCDIR)/core/title_music.asm \
                    $(SRCDIR)/core/clear_nt.asm \
-                   $(SRCDIR)/core/process_joy_buttons.asm
+                   $(SRCDIR)/core/process_joy_buttons.asm \
+                   $(SRCDIR)/core/enter_intro_story.asm \
+                   $(SRCDIR)/core/intro_story.asm \
+                   $(SRCDIR)/core/intro_story_joy.asm
 CORE_HOOKED_INCS = $(patsubst $(SRCDIR)/core/%.asm,$(BUILDDIR)/core/%.inc,$(CORE_HOOKED_SRCS))
 
 # --- Shared sources (platform-agnostic) ------------------------------------
@@ -82,7 +93,7 @@ all: build-x16 build-neo
 
 build-x16: $(X16_OUT)
 
-$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT)
+$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT) $(X16_INTRO_BIN)
 	@mkdir -p $(dir $@)
 	$(CA65) --cpu 65C02 -D __X16__ -I $(SRCDIR) -I $(BUILDDIR)/core \
 	        --bin-include-dir $(BUILDDIR)/x16 -o $@ $<
@@ -93,6 +104,7 @@ $(BUILDDIR)/x16/app/box_drawing_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/joy_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
 
 $(X16_OUT): $(X16_OBJS) $(X16_CFG)
 	@mkdir -p $(dir $@)
@@ -105,7 +117,7 @@ run-x16: build-x16
 
 build-neo: $(NEO_OUT)
 
-$(BUILDDIR)/neo/%.o: $(SRCDIR)/%.asm $(NEO_FONT)
+$(BUILDDIR)/neo/%.o: $(SRCDIR)/%.asm $(NEO_FONT) $(NEO_INTRO_BIN)
 	@mkdir -p $(dir $@)
 	$(CA65) --cpu 65C02 -D __NEO__ -I $(SRCDIR) -I $(BUILDDIR)/core \
 	        --bin-include-dir $(BUILDDIR)/neo -o $@ $<
@@ -116,6 +128,7 @@ $(BUILDDIR)/neo/app/box_drawing_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/joy_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
 
 $(NEO_RAW): $(NEO_OBJS) $(NEO_CFG)
 	@mkdir -p $(dir $@)
@@ -152,6 +165,20 @@ $(NEO_FONT): $(CHR_SCRIPT) $(FF1_FONT_RAW)
 	@mkdir -p $(dir $@)
 	python3 $(CHR_SCRIPT) $(FF1_FONT_RAW) $@ \
 	    --offset $(FF1_FONT_OFF) --tiles 64 --format neo
+
+# --- Intro text staging ----------------------------------------------------
+# No prerequisite on FF1_INTRO_SRC -- the path contains a space that
+# GNU make would split into two targets (same reason FF1_FONT_RAW has
+# no source-file dep). The file is shipped with the disassembly and
+# effectively immutable, so a one-shot copy is correct.
+
+$(X16_INTRO_BIN):
+	@mkdir -p $(dir $@)
+	@cp "$(FF1_INTRO_SRC)" $@
+
+$(NEO_INTRO_BIN):
+	@mkdir -p $(dir $@)
+	@cp "$(FF1_INTRO_SRC)" $@
 
 # --- Housekeeping ----------------------------------------------------------
 

@@ -23,7 +23,10 @@
 .import cur_pal
 .import DrawPalette
 .import EnterTitleScreen
+.import EnterIntroStory
 .import ClearNT
+.import startintrocheck
+.import soft2000
 
 .importzp clear_ptr
 
@@ -34,6 +37,7 @@
 .import __BSS_RUN__, __BSS_SIZE__
 
 .export main
+.export GameStart_L
 
 .segment "CODE"
 
@@ -42,17 +46,49 @@
     jsr HAL_Init
     jsr load_title_palette
     jsr DrawPalette
-    jsr EnterTitleScreen
+    jmp GameStart_L                     ; tail-call: GameStart never returns
+.endproc
 
-    ; EnterTitleScreen returns with C clear for Continue, C set for New
-    ; Game. The real game hands off to save-load or party generation; we
-    ; just wipe the nametable so the operator can see that the input
-    ; path closed the loop. Either choice clears the screen.
+; GameStart_L on the NES is a fixed-address trampoline (JMP GameStart).
+; FF1 code JSRs here from IntroStory_Joy on a Start-press to "restart"
+; the game (bounce back to the title screen).
+;
+; This is a trimmed port of GameStart (bank_0F.asm:66-154):
+;   - hardware init (PPU/APU) collapses to soft2000 staging; our HAL
+;     handles display bring-up in HAL_Init.
+;   - startup-info loops (party stats, game flags, exptonext) and
+;     SRAM verify / party-gen are skipped -- the title screen doesn't
+;     consult any of them, so they can land when we port combat/OW.
+;   - startintrocheck is the only cold-vs-warm signal we keep. clear_ram
+;     zeroes it on every run, so $4D != $00 always takes the cold path
+;     and the intro plays. When IntroStory_Joy JMPs back here later,
+;     startintrocheck is still $4D and the intro is skipped.
+;
+; Carry on return from EnterTitleScreen signals Continue vs New Game:
+; we have neither SRAM nor party gen yet, so both paths just wipe the
+; nametable and spin on HAL_WaitVblank so the operator can see the
+; title input closed the loop.
+GameStart_L:
+    lda #$08                            ; sprites use pattern table at $1xxx
+    sta soft2000
+
+    ldx #$FF                            ; reset stack pointer
+    txs
+
+    lda startintrocheck
+    cmp #$4D
+    beq @skip_intro
+      lda #$4D
+      sta startintrocheck
+      jsr EnterIntroStory
+
+@skip_intro:
+    jsr EnterTitleScreen                ; C clear = Continue, C set = New Game
+
     jsr ClearNT
 @forever:
     jsr HAL_WaitVblank
     jmp @forever
-.endproc
 
 ; Zero every byte of BSS, then every byte of ZEROPAGE. The NES reset
 ; vector does the equivalent by sweeping $0000..$07FF before calling

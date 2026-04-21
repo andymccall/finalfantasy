@@ -26,6 +26,10 @@
 .export spr_x, spr_y
 .export music_track
 .export oam
+.export intro_ataddr, intro_atbyte, intro_color
+.export framecounter
+.export startintrocheck
+.export unk_FE, NTsoft2000
 
 .segment "ZEROPAGE"
 
@@ -118,3 +122,30 @@ music_track: .res 1        ; desired track; written by IntroTitlePrepare,
 ; a no-op, so alignment doesn't matter -- we just need 256 bytes so the
 ; per-frame ClearOAM / DrawCursor writes land somewhere.
 oam:         .res 256
+
+; --- Intro-story animation state -------------------------------------------
+; intro_ataddr walks 8-byte attribute-table blocks from $23C0 to $23F8.
+; intro_atbyte is the byte written into all 8 positions of that block.
+; intro_color cycles the "main" fade colour for IntroStory_AnimateRow.
+; On the NES these live at $62/$63/$64 zero-page; flat RAM here.
+intro_ataddr:    .res 1
+intro_atbyte:    .res 1
+intro_color:     .res 1
+
+; Two-byte frame counter. IntroStory_AnimateRow INCs it each sub-frame,
+; and the main overworld loop increments it too. Lives at $F0/$F1 on NES.
+framecounter:    .res 2
+
+; "Was this a cold boot?" marker. On the NES, RAM boots to garbage --
+; GameStart compares this byte to $4D and, if unequal, treats the reset
+; as cold, runs the intro, then writes $4D so warm resets skip it.
+; clear_ram zeroes this on every run so we always take the cold path,
+; which matches the user-visible expectation of a fresh boot.
+startintrocheck: .res 1
+
+; unk_FE is written by GameStart_L and never read. NTsoft2000 shadows
+; soft2000 for coarse scrolling on the overworld. Neither is consulted
+; by the title path we currently exercise, but the verbatim code stores
+; into them so the slots must exist.
+unk_FE:          .res 1
+NTsoft2000:      .res 1
