@@ -1,0 +1,21 @@
+# Build output
+build/
+release/
+
+# Neo6502 emulator side-effects from `make run-neo`
+storage/
+memory.dump
+
+# Claude Code workspace / agent state
+.claude/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
