@@ -17,6 +17,8 @@ Substitutions (case-insensitive, whole-mnemonic match, comments preserved):
     STY $2006  ->  JSR HAL_PPU_2006_Write_Y (Y-sourced PPUADDR write)
     STX $2007  ->  JSR HAL_PPU_2007_Write_X (X-sourced PPUDATA write)
     STY $2007  ->  JSR HAL_PPU_2007_Write_Y (Y-sourced PPUDATA write)
+    STA $4014  ->  JSR HAL_APU_4014_Write   (OAMDMA -- host no-op)
+    STA $4015  ->  JSR HAL_APU_4015_Write   (APU channel enable -- host no-op)
 
 The _X / _Y variants exist because FF1 occasionally uses STX/STY against
 the PPU ports specifically to avoid disturbing A (e.g. DrawComplexString
@@ -40,6 +42,8 @@ PATTERNS = (
     (re.compile(r"\bsty\s+\$2006\b", re.IGNORECASE), "JSR HAL_PPU_2006_Write_Y"),
     (re.compile(r"\bstx\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Write_X"),
     (re.compile(r"\bsty\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Write_Y"),
+    (re.compile(r"\bsta\s+\$4014\b", re.IGNORECASE), "JSR HAL_APU_4014_Write"),
+    (re.compile(r"\bsta\s+\$4015\b", re.IGNORECASE), "JSR HAL_APU_4015_Write"),
 )
 
 

@@ -48,7 +48,11 @@ CORE_HOOKED_SRCS = $(SRCDIR)/core/title_copyright.asm \
                    $(SRCDIR)/core/nt_row_luts.asm \
                    $(SRCDIR)/core/draw_box.asm \
                    $(SRCDIR)/core/menu_cond_stall.asm \
-                   $(SRCDIR)/core/draw_complex_string.asm
+                   $(SRCDIR)/core/draw_complex_string.asm \
+                   $(SRCDIR)/core/title_screen.asm \
+                   $(SRCDIR)/core/title_music.asm \
+                   $(SRCDIR)/core/clear_nt.asm \
+                   $(SRCDIR)/core/process_joy_buttons.asm
 CORE_HOOKED_INCS = $(patsubst $(SRCDIR)/core/%.asm,$(BUILDDIR)/core/%.inc,$(CORE_HOOKED_SRCS))
 
 # --- Shared sources (platform-agnostic) ------------------------------------
@@ -87,6 +91,8 @@ $(BUILDDIR)/x16/app/title_copyright_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/draw_palette_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/box_drawing_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/joy_shim.o: $(CORE_HOOKED_INCS)
 
 $(X16_OUT): $(X16_OBJS) $(X16_CFG)
 	@mkdir -p $(dir $@)
@@ -108,6 +114,8 @@ $(BUILDDIR)/neo/app/title_copyright_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/draw_palette_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/box_drawing_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/joy_shim.o: $(CORE_HOOKED_INCS)
 
 $(NEO_RAW): $(NEO_OBJS) $(NEO_CFG)
 	@mkdir -p $(dir $@)

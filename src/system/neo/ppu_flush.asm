@@ -7,9 +7,12 @@
 ;   1. SET_CURSOR_POS(col, row)    (group $02 function $07)
 ;   2. WriteCharacter(byte)        (KERNAL vector $FFF1)
 ;
-; Zero bytes are skipped and treated as "transparent" -- the screen is
-; cleared once at boot, so leaving those cells untouched keeps them blank
-; without issuing one API call per empty cell every frame.
+; Every cell is painted on every flush -- FF1 writes tile codes directly
+; into its nametable mirror, so a cell that contains $00 in the mirror
+; is genuinely blank and must clear any glyph that was previously drawn
+; there. The earlier optimisation that skipped $00 cells caused stale
+; tiles to linger (most visibly: respond-rate's digit appeared one frame
+; late, or not at all if the frame-counter poll didn't re-fire).
 ; ---------------------------------------------------------------------------
 
 .import ppu_nt_mirror
@@ -70,19 +73,21 @@ flush_col: .res 1
     ldy #0
 @col_loop:
     lda (flush_ptr), y
-    beq @next_col                       ; skip transparent/empty cells
 
     ; FF1 font slots $80..$BF are uploaded into Neo user-font slots
     ; $C0..$FF; remap those nametable bytes so the console renders our
     ; glyph instead of its built-in ROM font glyph. Bytes outside this
     ; range pass through unchanged (e.g. $20 still hits the space).
     ;
-    ; $FF is a special case: FF1 uses it as its blank/space tile. It sits
-    ; above our remap range, so without a hand-off it would pass through
-    ; and hit Neo user-font slot $FF -- which now holds the FF1 glyph
-    ; uploaded into our top slot (FF1 tile $BF, a punctuation mark on
-    ; screen). Short-circuit it to ASCII $20 so the console prints a real
-    ; space.
+    ; $00 and $FF are special: FF1 writes $00 to represent a truly empty
+    ; cell (ClearNT fills the nametable with $00), and $FF as its own
+    ; blank/space tile. Both are short-circuited to ASCII $20 so the
+    ; console prints a real space and overwrites any stale glyph.
+    cmp #$00
+    bne @check_ff
+    lda #$20
+    bra @xlat_done
+@check_ff:
     cmp #$FF
     bne @check_font
     lda #$20

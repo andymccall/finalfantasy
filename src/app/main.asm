@@ -1,93 +1,108 @@
 ; ---------------------------------------------------------------------------
 ; main.asm - Application entry point.
 ; ---------------------------------------------------------------------------
-; Called once per boot by the platform's STARTUP segment. HAL_Init brings
-; the display up and uploads the FF1 font into host tile memory. We stage
-; an authentic-ish FF1 title palette into cur_pal, then let the verbatim
-; DrawPalette routine walk it out to the virtual PPU's $3F00 window; the
-; palette trap converts each byte and pokes it into host palette hardware
-; via HAL_PalettePush. The verbatim TitleScreen_Copyright renders the
-; two copyright lines; then we drive the verbatim DrawBox three times
-; with the same box coordinates EnterTitleScreen uses -- M7b.1 is just
-; the box outlines, the contained text gets wired in a later milestone.
-; The vblank flush paints mirror + NES attribute table onto the host
-; display each frame.
+; Called once per boot by the platform's STARTUP segment. We first zero
+; the ZEROPAGE and BSS segments to mirror the NES reset vector's
+; RAM-clear, which is what FF1's GameStart routine assumes (it only
+; initialises the variables it cares about and relies on everything else
+; being zero at power-on). HAL_Init brings the display up and uploads
+; the FF1 font; the title palette is staged into cur_pal and walked out
+; via DrawPalette; then EnterTitleScreen takes over -- the verbatim
+; routine that draws copyright text, the three menu boxes, their
+; strings, and runs the title-screen input loop.
+;
+; With joypad input stubbed to zero, EnterTitleScreen's logic loop never
+; takes the "option chosen" exit, so it spins on HAL_WaitVblank forever
+; -- which is exactly the steady state we want at this milestone. The
+; vblank flush paints the nametable + NES attribute table onto the host
+; display each frame from inside HAL_WaitVblank.
 ; ---------------------------------------------------------------------------
 
 .include "system/hal.inc"
 
 .import cur_pal
-.import box_x, box_y, box_wd, box_ht
-.import menustall
-.import text_ptr
-.import cur_bank, ret_bank
 .import DrawPalette
-.import DrawBox
-.import DrawComplexString
-.import TitleScreen_Copyright
+.import EnterTitleScreen
+.import ClearNT
+
+.importzp clear_ptr
+
+; ld65 emits these automatically for any segment: start address and
+; total size in bytes. We use them to zero ZEROPAGE and BSS without
+; having to enumerate every variable in ff_ram.asm.
+.import __ZEROPAGE_RUN__, __ZEROPAGE_SIZE__
+.import __BSS_RUN__, __BSS_SIZE__
 
 .export main
-
-BANK_THIS = $00                         ; host is a flat address space; any value works
 
 .segment "CODE"
 
 .proc main
+    jsr clear_ram
     jsr HAL_Init
     jsr load_title_palette
     jsr DrawPalette
+    jsr EnterTitleScreen
 
-    stz menustall                       ; PPU is off; no per-row stalling
-    jsr TitleScreen_Copyright
-
-    lda #BANK_THIS                      ; matches FF1's EnterTitleScreen
-    sta cur_bank
-    sta ret_bank
-
-    ; --- three title-screen boxes (coords/strings from EnterTitleScreen) ---
-    ; Box 1: "Continue" at (11, 10), 10 wide x 4 tall
-    lda #11
-    sta box_x
-    lda #10
-    sta box_y
-    lda #10
-    sta box_wd
-    lda #4
-    sta box_ht
-    jsr DrawBox
-    lda #<lut_TitleText_Continue
-    sta text_ptr
-    lda #>lut_TitleText_Continue
-    sta text_ptr+1
-    jsr DrawComplexString
-
-    ; Box 2: "New Game" at (11, 15), same dims
-    lda #15
-    sta box_y
-    jsr DrawBox
-    lda #<lut_TitleText_NewGame
-    sta text_ptr
-    lda #>lut_TitleText_NewGame
-    sta text_ptr+1
-    jsr DrawComplexString
-
-    ; Box 3: "Respond Rate" at (8, 20), 16 wide x 4 tall
-    lda #8
-    sta box_x
-    lda #20
-    sta box_y
-    lda #16
-    sta box_wd
-    jsr DrawBox
-    lda #<lut_TitleText_RespondRate
-    sta text_ptr
-    lda #>lut_TitleText_RespondRate
-    sta text_ptr+1
-    jsr DrawComplexString
-
-@loop:
+    ; EnterTitleScreen returns with C clear for Continue, C set for New
+    ; Game. The real game hands off to save-load or party generation; we
+    ; just wipe the nametable so the operator can see that the input
+    ; path closed the loop. Either choice clears the screen.
+    jsr ClearNT
+@forever:
     jsr HAL_WaitVblank
-    jmp @loop
+    jmp @forever
+.endproc
+
+; Zero every byte of BSS, then every byte of ZEROPAGE. The NES reset
+; vector does the equivalent by sweeping $0000..$07FF before calling
+; GameStart, which is why FF1 can assume respondrate/cursor/joy*/
+; music_track are all zero on entry to EnterTitleScreen.
+;
+; Order matters: we stash a 16-bit working pointer in zero page at
+; clear_ptr (reserved via ff_ram.asm) and use it for the BSS sweep
+; via (clear_ptr),y. The zero-page clear happens afterwards, which
+; also zeroes clear_ptr itself. BSS can be any size; zero page is
+; bounded to 256 bytes so an LDX loop suffices.
+.proc clear_ram
+    ; --- BSS ---
+    lda #<__BSS_RUN__
+    sta clear_ptr
+    lda #>__BSS_RUN__
+    sta clear_ptr+1
+    ldx #<(>__BSS_SIZE__)       ; whole-page count (high byte of size)
+    ldy #0
+    lda #0
+    cpx #0
+    beq @tail
+@page_loop:
+    sta (clear_ptr), y
+    iny
+    bne @page_loop
+    inc clear_ptr+1
+    dex
+    bne @page_loop
+@tail:
+    ldx #<(<__BSS_SIZE__)       ; leftover bytes in final page
+    beq @zp
+@tail_loop:
+    sta (clear_ptr), y
+    iny
+    dex
+    bne @tail_loop
+
+    ; --- ZEROPAGE (this also zeroes clear_ptr) ---
+@zp:
+    ldx #<__ZEROPAGE_SIZE__     ; ZEROPAGE is <= 256 bytes; low byte is size
+    beq @done
+    lda #0
+@zp_loop:
+    dex
+    sta __ZEROPAGE_RUN__, x
+    bne @zp_loop
+    sta __ZEROPAGE_RUN__        ; X=0 case: write slot 0
+@done:
+    rts
 .endproc
 
 ; Copy 32 NES colour indices from RODATA into FF1's cur_pal staging buffer.
@@ -126,14 +141,3 @@ title_palette:
     .byte $0F, $30, $30, $30
     .byte $0F, $30, $30, $30
     .byte $0F, $30, $30, $30
-
-; Pointerless FF1 title-screen strings (verbatim from bank_0E.asm:3654-3661).
-; Every byte is >= $7A, so DrawComplexString skips all DTE and control-code
-; paths and writes the bytes straight through as tile indices. $FF is the
-; blank-space tile; $00 is the string terminator.
-lut_TitleText_Continue:
-    .byte $8C, $98, $97, $9D, $92, $97, $9E, $8E, $00
-lut_TitleText_NewGame:
-    .byte $97, $8E, $A0, $FF, $90, $8A, $96, $8E, $00
-lut_TitleText_RespondRate:
-    .byte $9B, $8E, $9C, $99, $98, $97, $8D, $FF, $9B, $8A, $9D, $8E, $00

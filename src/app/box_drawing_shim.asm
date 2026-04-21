@@ -11,11 +11,11 @@
 ;
 ; The hook script rewrites every NES-port STA against $2000/$2005/$2006/
 ; $2007 into JSRs against the HAL; this shim pulls those hooks in. It
-; also stubs CallMusicPlay and WaitForVBlank_L, which MenuCondStall JSRs
-; into when menustall != 0. The application keeps menustall at 0 for the
-; whole title screen (PPU is off -- no stall needed), so those stubs are
-; never actually called; they only exist so the linker can resolve the
-; symbols.
+; also stubs CallMusicPlay -- which MenuCondStall JSRs into when
+; menustall != 0, and which TitleScreen_Music JSRs every frame -- and
+; exports it so title_screen_shim can reach the same stub. WaitForVBlank_L
+; lives in title_screen_shim (since it's on the title loop's critical
+; frame path there); MenuCondStall reaches it via that export.
 ;
 ; Segment switches around the nt_row_luts include keep the two 32-byte
 ; tables in RODATA while the rest stays in CODE.
@@ -33,24 +33,23 @@
 .import soft2000
 .import menustall
 
+.import WaitForVBlank_L                 ; provided by title_screen_shim
+
 .export DrawBox
 .export DrawBoxRow_Top
 .export DrawBoxRow_Mid
 .export DrawBoxRow_Bot
 .export CoordToNTAddr
 .export MenuCondStall
+.export CallMusicPlay
 .export lut_NTRowStartLo
 .export lut_NTRowStartHi
 
 .segment "CODE"
 
-; Stubs for the two routines MenuCondStall jumps into when menustall != 0.
-; On the title screen menustall is 0, so these are unreachable -- they
-; only satisfy the linker. When audio / vblank support arrives, replace
-; these with real implementations and delete the stubs.
+; Music driver stub -- reached via MenuCondStall (when menustall != 0) and
+; every frame from TitleScreen_Music. No audio driver yet, so it's RTS.
 CallMusicPlay:
-    rts
-WaitForVBlank_L:
     rts
 
 .include "coord_to_nt_addr.inc"

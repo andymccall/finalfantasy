@@ -46,10 +46,23 @@
 ;                           restore A on return, so the NES "store preserves
 ;                           all registers" invariant holds for these callers
 ;                           too.
+;   HAL_APU_4014_Write -- accept a byte write to $4014 (OAMDMA). On a real
+;                         NES this starts a 256-byte OAM transfer. The
+;                         re-host has no sprite plane yet, so the hook is
+;                         a no-op; A/X/Y preserved.
+;   HAL_APU_4015_Write -- accept a byte write to $4015 (APU channel
+;                         enable). The re-host has no audio driver so the
+;                         hook is a no-op; A/X/Y preserved.
 ;   HAL_LoadTiles      -- push the build-time-converted FF1 font into the
 ;                         host's tile/character memory. Subsequent mirror
 ;                         bytes within the font's source range render with
 ;                         FF1 glyphs. Clobbers A/X/Y.
+;   HAL_PollJoy        -- sample the host's current controller/keyboard
+;                         state and return an 8-bit NES-joypad mask in A:
+;                           bit 0 Right, bit 1 Left, bit 2 Down, bit 3 Up,
+;                           bit 4 Start, bit 5 Select, bit 6 B, bit 7 A.
+;                         Non-blocking; always returns immediately.
+;                         Clobbers A/X/Y.
 ; ---------------------------------------------------------------------------
 
 .import HAL_Init
@@ -64,4 +77,7 @@
 .import HAL_PPU_2007_Write
 .import HAL_PPU_2007_Write_X
 .import HAL_PPU_2007_Write_Y
+.import HAL_APU_4014_Write
+.import HAL_APU_4015_Write
 .import HAL_LoadTiles
+.import HAL_PollJoy
