@@ -35,7 +35,9 @@ Each platform builds with its own define (`-D __X16__` or `-D __NEO__`) for cond
 ## Running
 
 ```sh
-make run-x16      # launch x16emu with FF.PRG (type RUN at the BASIC prompt)
+make run-x16      # launch x16emu with FF.PRG and auto-RUN it
+make load-x16     # launch x16emu with FF.PRG loaded but at the BASIC prompt
+                  #   (type RUN yourself -- useful for recording)
 make run-neo      # launch the Neo6502 emulator; ff.neo auto-runs
 make load-neo     # stage ff.neo + tiles.gfx into ./storage/ and launch the
                   #   emulator without auto-running (for manual recording)

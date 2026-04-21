@@ -104,7 +104,7 @@ NEO_RAW  = $(BUILDDIR)/neo/ff.bin
 NEO_OUT  = $(BUILDDIR)/neo/ff.neo
 
 # --- Targets ---------------------------------------------------------------
-.PHONY: all build-x16 build-neo run-x16 run-neo load-neo clean
+.PHONY: all build-x16 build-neo run-x16 load-x16 run-neo load-neo clean
 
 all: build-x16 build-neo
 
@@ -131,6 +131,11 @@ $(X16_OUT): $(X16_OBJS) $(X16_CFG)
 	$(LD65) -C $(X16_CFG) -o $@ $(X16_OBJS)
 
 run-x16: build-x16
+	$(X16EMU) -prg $(X16_OUT) -run
+
+# load-x16: launch x16emu with FF.PRG loaded but not auto-run. Type RUN
+# at the BASIC prompt when ready (useful for recording the boot sequence).
+load-x16: build-x16
 	$(X16EMU) -prg $(X16_OUT)
 
 # --- Neo6502 build ---------------------------------------------------------
