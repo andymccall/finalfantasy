@@ -51,6 +51,7 @@
 .export HAL_PPU_2007_Write_Y
 .export ppu_nt_mirror
 .export palette_ram
+.export nt_dirty
 
 .segment "ZEROPAGE"
 
@@ -64,6 +65,10 @@ ppu_addr_lo:    .res 1
 ppu_addr_hi:    .res 1
 ppu_addr_latch: .res 1                  ; 0 = next write is high byte
                                         ; 1 = next write is low byte
+nt_dirty:       .res 1                  ; non-zero iff the mirror has been
+                                        ; written since the last flush. The
+                                        ; HAL flush routine clears this when
+                                        ; it has finished painting.
 
 ; ---------------------------------------------------------------------------
 
@@ -76,6 +81,11 @@ ppu_addr_latch: .res 1                  ; 0 = next write is high byte
     stz ppu_addr_lo
     stz ppu_addr_hi
     stz ppu_addr_latch
+    ; Start dirty so the very first flush paints the (zeroed) mirror, which
+    ; overlays the firmware console clear with our black rectangle and
+    ; establishes a known-good graphics plane.
+    lda #1
+    sta nt_dirty
 
     ldx #0
 @zap_nt:
@@ -175,6 +185,36 @@ ppu_addr_latch: .res 1                  ; 0 = next write is high byte
     pla                                 ; restore input byte
     ldy #0
     sta (ppu_nt_ptr), y
+
+    ; nt_dirty only needs to be set for writes that affect the visible
+    ; 32x30 tile grid -- PPU offsets $000..$3BF within each nametable.
+    ; Attribute-table writes ($3C0..$3FF of each NT) change palette
+    ; selection but not the tile bytes our flush routine looks at, so
+    ; setting nt_dirty for them would force a repaint on every frame
+    ; during the intro-story fade (IntroStory_WriteAttr runs each frame
+    ; and writes only to $23C0..$23FF). That re-introduces the flicker
+    ; from overrun scanout.
+    ;
+    ; Attribute region: (ppu_addr_hi & $03) == $03 AND ppu_addr_lo >= $C0.
+    ; A must NOT be clobbered on return -- FF1 keeps the byte-to-write in
+    ; A across tight $2007 loops (e.g. EnterIntroStory's LDA #$FF / loop:
+    ; 4x STA $2007 / DEX / BNE), and a real NES STA leaves A untouched.
+    ; We stash A on the stack for the duration of the classification and
+    ; restore it before @advance. X is already saved on entry (phx/plx).
+    pha
+    lda ppu_addr_hi
+    and #$03
+    cmp #$03
+    bne @mark_dirty
+    lda ppu_addr_lo
+    cmp #$C0
+    bcs @nt_done                        ; attribute byte -- skip nt_dirty
+
+@mark_dirty:
+    ldx #1
+    stx nt_dirty                        ; signal the HAL flush routine
+@nt_done:
+    pla                                 ; restore caller's A
     bra @advance
 
     ; --- palette path ------------------------------------------------------

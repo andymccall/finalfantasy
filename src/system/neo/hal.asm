@@ -1,12 +1,13 @@
 ; ---------------------------------------------------------------------------
 ; hal.asm - Neo6502 HAL implementation.
 ; ---------------------------------------------------------------------------
+; Rendering model: the Neo console is unused; everything is drawn on the
+; graphics plane (320x240, the Neo's only graphics mode). FF1's 32x30
+; nametable is painted via Group 5 Function 7 Draw Image per cell, with
+; a 32-pixel horizontal gutter centring the 256-pixel-wide NES viewport.
+;
 ; Vblank via API_GROUP_GRAPHICS / API_FN_FRAME_COUNT. The previous 32-bit
 ; counter is held in BSS; a new frame is signalled when any byte differs.
-;
-; On init the console screen is cleared and the virtual PPU is reset. After
-; each vblank the HAL walks the 32x30 visible region of the nametable
-; mirror and pushes non-zero cells through SET_CURSOR_POS + WriteCharacter.
 ;
 ; API pattern: store function in API_FUNCTION, spin until API_COMMAND is
 ; zero (previous call done), then store the group in API_COMMAND to fire.
@@ -17,10 +18,10 @@
 .import HAL_PPUInit
 .import HAL_FlushNametable
 .import HAL_LoadTiles
+.import HAL_PaletteInit
 
 .export HAL_Init
 .export HAL_WaitVblank
-.export neo_col_offset
 
 ; --- Neo6502 API -----------------------------------------------------------
 ControlPort          = $FF00
@@ -28,15 +29,11 @@ API_COMMAND          = ControlPort + 0
 API_FUNCTION         = ControlPort + 1
 API_PARAMETERS       = ControlPort + 4
 
-API_GROUP_CONSOLE    = $02
-API_FN_DEFINE_CHAR   = $05
-API_FN_SCREEN_SIZE   = $09
-API_FN_CLEAR_SCREEN  = $0C
-
 API_GROUP_GRAPHICS   = $05
 API_FN_FRAME_COUNT   = $25
 
-NES_VIEW_COLS        = 32
+API_GROUP_CONSOLE    = $02
+API_FN_CLEAR_SCREEN  = $0C
 
 ; ---------------------------------------------------------------------------
 ; Entry: exec.zip loads the binary at $0800 and jumps there.
@@ -50,57 +47,39 @@ NES_VIEW_COLS        = 32
 .segment "BSS"
 
 last_frame_count: .res 4
-neo_col_offset:   .res 1             ; (console_width - 32) / 2; added by flush
 
 ; ---------------------------------------------------------------------------
 
 .segment "CODE"
 
 .proc HAL_Init
-    ; --- clear the console screen -------------------------------------------
-    lda #API_FN_CLEAR_SCREEN
-    sta API_FUNCTION
-@wait_clear:
-    lda API_COMMAND
-    bne @wait_clear
-    lda #API_GROUP_CONSOLE
-    sta API_COMMAND
-@wait_clear_done:
-    lda API_COMMAND
-    bne @wait_clear_done
-
-    ; --- centre the 32-wide NES region in the (wider) console --------------
-    ; Screen Size returns width in param 0, height in param 1. Firmware is
-    ; known to always report a console width >= 32, so no underflow guard.
-    lda #API_FN_SCREEN_SIZE
-    sta API_FUNCTION
-@wait_size:
-    lda API_COMMAND
-    bne @wait_size
-    lda #API_GROUP_CONSOLE
-    sta API_COMMAND
-@wait_size_done:
-    lda API_COMMAND
-    bne @wait_size_done
-
-    lda API_PARAMETERS + 0              ; console width in cells
-    sec
-    sbc #NES_VIEW_COLS
-    lsr                                 ; (width - 32) / 2
-    sta neo_col_offset
-
     stz last_frame_count + 0
     stz last_frame_count + 1
     stz last_frame_count + 2
     stz last_frame_count + 3
 
+    ; One-shot Console CLS to erase the firmware's "Morpheus" boot banner
+    ; before we take over the graphics plane. Done once at init -- per-frame
+    ; CLS would cause flicker because it can't complete alongside 960 Draw
+    ; Image calls inside a single vblank.
+@wait_idle:
+    lda API_COMMAND
+    bne @wait_idle
+    lda #API_FN_CLEAR_SCREEN
+    sta API_FUNCTION
+    lda #API_GROUP_CONSOLE
+    sta API_COMMAND
+@wait_done:
+    lda API_COMMAND
+    bne @wait_done
+
+    jsr HAL_PaletteInit                 ; program Neo palette slots 0..3 for FF1 menu colours
     jsr HAL_PPUInit
-    jsr HAL_LoadTiles
+    jsr HAL_LoadTiles                   ; loads combined tiles.gfx (tiles + cursor sprite)
     rts
 .endproc
 
 .proc HAL_WaitVblank
-    ; --- wait for the frame counter to advance ------------------------------
 @poll:
     lda #API_FN_FRAME_COUNT
     sta API_FUNCTION

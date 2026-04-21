@@ -33,7 +33,6 @@ FF1_FONT_COUNT := 128
 FF1_FONT_RAW   := $(BUILDDIR)/bank_09_data.bin
 CHR_SCRIPT     := $(SCRIPTDIR)/chr_convert.py
 X16_FONT       := $(BUILDDIR)/x16/font_converted.bin
-NEO_FONT       := $(BUILDDIR)/neo/font_converted.bin
 
 # The intro story text is a 224-byte format-coded blob FF1 ships in
 # bin/0D_BF20_introtext.bin. lut_IntroStoryText INCBIN's it through the
@@ -47,12 +46,18 @@ NEO_INTRO_BIN   := $(BUILDDIR)/neo/introtext.bin
 # bank_09.asm past the end of bank_09_data.bin, so we extract them via
 # a script, then a platform converter turns the 2bpp CHR into whatever
 # native sprite format the HAL wants. X16 wants VERA 4bpp packed
-# (128 bytes). Neo's converter lands with the Neo sprite HAL.
+# (128 bytes). Neo folds the cursor into the combined tiles.gfx.
 FF1_BANK_09_ASM := $(FF1_DIS_ROOT)/bank_09.asm
 CURSOR_CHR      := $(BUILDDIR)/cursor.chr
 CURSOR_EXTRACT  := $(SCRIPTDIR)/extract_cursor_chr.py
 X16_CURSOR_VERA := $(BUILDDIR)/x16/cursor_vera.bin
 X16_CURSOR_CONV := $(SCRIPTDIR)/cursor_to_vera.py
+
+# Neo graphics plane artefact. Single .gfx file holds 128 FF1 font tiles
+# (16x16 images, glyph in upper-left) and 1 cursor sprite. Loaded into
+# gfxObjectMemory once at boot and addressed by Draw Image + Sprite Set.
+NEO_TILES_GFX   := $(BUILDDIR)/neo/tiles.gfx
+NEO_TILES_CONV  := $(SCRIPTDIR)/chr_to_neo_gfx.py
 
 # --- Core routines hooked through scripts/hook_ppu.py ----------------------
 # Files listed here are verbatim FF1 extracts. They have no ca65 directives
@@ -99,7 +104,7 @@ NEO_RAW  = $(BUILDDIR)/neo/ff.bin
 NEO_OUT  = $(BUILDDIR)/neo/ff.neo
 
 # --- Targets ---------------------------------------------------------------
-.PHONY: all build-x16 build-neo run-x16 run-neo clean
+.PHONY: all build-x16 build-neo run-x16 run-neo load-neo clean
 
 all: build-x16 build-neo
 
@@ -132,7 +137,7 @@ run-x16: build-x16
 
 build-neo: $(NEO_OUT)
 
-$(BUILDDIR)/neo/%.o: $(SRCDIR)/%.asm $(NEO_FONT) $(NEO_INTRO_BIN)
+$(BUILDDIR)/neo/%.o: $(SRCDIR)/%.asm $(NEO_INTRO_BIN)
 	@mkdir -p $(dir $@)
 	$(CA65) --cpu 65C02 -D __NEO__ -I $(SRCDIR) -I $(BUILDDIR)/core \
 	        --bin-include-dir $(BUILDDIR)/neo -o $@ $<
@@ -150,15 +155,25 @@ $(NEO_RAW): $(NEO_OBJS) $(NEO_CFG)
 	@mkdir -p $(dir $@)
 	$(LD65) -C $(NEO_CFG) -o $@ $(NEO_OBJS)
 
-$(NEO_OUT): $(NEO_RAW)
+$(NEO_OUT): $(NEO_RAW) $(NEO_TILES_GFX)
 	python3 $(NEO_HOME)/exec.zip $(NEO_RAW)@800 run@800 -o"$(NEO_OUT)"
 
 run-neo: build-neo
 	@mkdir -p storage
 	@cp $(NEO_OUT) storage/
+	@cp $(NEO_TILES_GFX) storage/
 	$(NEOEMU) $(NEO_OUT) cold
 	@rm -rf storage
 	@rm -f memory.dump
+
+# load-neo: stage storage/ with ff.neo + tiles.gfx and launch Morpheus
+# without auto-running the binary. Use this when recording the boot
+# sequence manually from the monitor.
+load-neo: build-neo
+	@mkdir -p storage
+	@cp $(NEO_OUT) storage/
+	@cp $(NEO_TILES_GFX) storage/
+	$(NEOEMU) cold
 
 # --- PPU hook rules --------------------------------------------------------
 
@@ -176,11 +191,6 @@ $(X16_FONT): $(CHR_SCRIPT) $(FF1_FONT_RAW)
 	@mkdir -p $(dir $@)
 	python3 $(CHR_SCRIPT) $(FF1_FONT_RAW) $@ \
 	    --offset $(FF1_FONT_OFF) --tiles $(FF1_FONT_COUNT) --format x16
-
-$(NEO_FONT): $(CHR_SCRIPT) $(FF1_FONT_RAW)
-	@mkdir -p $(dir $@)
-	python3 $(CHR_SCRIPT) $(FF1_FONT_RAW) $@ \
-	    --offset $(FF1_FONT_OFF) --tiles 64 --format neo
 
 # --- Intro text staging ----------------------------------------------------
 # No prerequisite on FF1_INTRO_SRC -- the path contains a space that
@@ -207,6 +217,11 @@ $(CURSOR_CHR): $(CURSOR_EXTRACT)
 $(X16_CURSOR_VERA): $(X16_CURSOR_CONV) $(CURSOR_CHR)
 	@mkdir -p $(dir $@)
 	python3 $(X16_CURSOR_CONV) $(CURSOR_CHR) $@
+
+$(NEO_TILES_GFX): $(NEO_TILES_CONV) $(FF1_FONT_RAW) $(CURSOR_CHR)
+	@mkdir -p $(dir $@)
+	python3 $(NEO_TILES_CONV) --font $(FF1_FONT_RAW) --font-offset $(FF1_FONT_OFF) \
+	    --cursor $(CURSOR_CHR) --output $@
 
 # --- Housekeeping ----------------------------------------------------------
 

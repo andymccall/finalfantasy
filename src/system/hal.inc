@@ -47,9 +47,13 @@
 ;                           all registers" invariant holds for these callers
 ;                           too.
 ;   HAL_APU_4014_Write -- accept a byte write to $4014 (OAMDMA). On a real
-;                         NES this starts a 256-byte OAM transfer. The
-;                         re-host has no sprite plane yet, so the hook is
-;                         a no-op; A/X/Y preserved.
+;                         NES this starts a 256-byte OAM transfer from CPU
+;                         page $BB00 into PPU OAM. FF1 uses it every frame
+;                         during menu/title loops. The hook tail-calls into
+;                         a platform-supplied HAL_OAMFlush (exported from
+;                         src/system/<target>/sprites.asm) that reads the
+;                         flat oam[] BSS buffer and updates the host's
+;                         sprite plane. A/X/Y preserved.
 ;   HAL_APU_4015_Write -- accept a byte write to $4015 (APU channel
 ;                         enable). The re-host has no audio driver so the
 ;                         hook is a no-op; A/X/Y preserved.

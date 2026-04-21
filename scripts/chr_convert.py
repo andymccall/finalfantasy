@@ -12,27 +12,17 @@ marker (so on the NES, palette colour 2 paints the cell background and
 colour 3 the glyph itself). OR-ing both planes therefore makes every
 tile solid; we keep only plane 0, which matches the visible letterform.
 
-Output formats:
+Output format:
     x16 - 8 bytes per tile, one byte per row. Drops straight into VERA
           text-mode character memory (1bpp, MSB = leftmost pixel).
-    neo - 7 bytes per tile (top 7 rows only), each row pre-shifted left
-          by one bit. Neo's Group 2 Function $05 "Define Character"
-          renders bits 7..2 as a 6-wide cell; FF1 glyphs are 7 pixels
-          wide sitting in bits 6..0 with bit 7 blank, so the shift slides
-          the glyph into the visible window and only drops the single
-          outermost pixel of the rightmost column.
 """
 
 import argparse
 import sys
 
 
-def tile_1bpp(src, rows, shift_left=0):
-    out = bytearray(rows)
-    mask = 0xFF
-    for r in range(rows):
-        out[r] = (src[r] << shift_left) & mask
-    return bytes(out)
+def tile_1bpp(src):
+    return bytes(src[:8])
 
 
 def main():
@@ -43,12 +33,9 @@ def main():
                     help="byte offset into the input blob (default 0)")
     ap.add_argument("--tiles", type=int, default=128,
                     help="number of tiles to convert (default 128)")
-    ap.add_argument("--format", choices=("x16", "neo"), required=True,
+    ap.add_argument("--format", choices=("x16",), required=True,
                     help="target platform format")
     args = ap.parse_args()
-
-    rows = 8 if args.format == "x16" else 7
-    shift = 0 if args.format == "x16" else 1
 
     with open(args.input, "rb") as f:
         data = f.read()
@@ -62,7 +49,7 @@ def main():
     out = bytearray()
     for t in range(args.tiles):
         base = args.offset + t * 16
-        out.extend(tile_1bpp(data[base:base + 16], rows, shift))
+        out.extend(tile_1bpp(data[base:base + 16]))
 
     with open(args.output, "wb") as f:
         f.write(out)
