@@ -59,6 +59,7 @@
 .import TitleScreen_Copyright
 .import DrawBox
 .import DrawComplexString
+.import DrawCursor                      ; real 2x2-sprite impl lives in sprite_shim
 .import CallMusicPlay                   ; audio stub lives in box_drawing_shim
 .import UpdateJoy                       ; real impl lives in joy_shim
 
@@ -69,8 +70,7 @@
 .import soft2000
 .import respondrate, cursor
 .import joy, joy_a, joy_b, joy_start, joy_prevdir
-.import spr_x, spr_y
-.import ppu_nt_mirror
+.import spr_x, spr_y, sprindex
 .import music_track
 .import oam
 
@@ -102,123 +102,25 @@ LoadMenuCHRPal:
     rts
 
 ; TurnMenuScreenOn_ClearOAM on the NES flips PPUCTRL/PPUMASK bits to
-; enable rendering after ClearOAM. Our PPU is always on; we just need the
-; OAM zero-out, and even that is a safety net because DrawCursor is
-; stubbed too.
+; enable rendering after ClearOAM. Our PPU is always on, so we just
+; fall through to ClearOAM.
 TurnMenuScreenOn_ClearOAM:
-    ; fall through to ClearOAM and let its RTS return
+    ; fall through to ClearOAM
 
-; ClearOAM fills 256 bytes of the oam buffer with $FF. $FF in the Y
-; coordinate puts the sprite off-screen on real hardware, so "hide all
-; sprites" is just "write $FF everywhere". This matches the NES routine.
-;
-; We also use ClearOAM's per-frame firing as the erase signal for our
-; text-mode cursor: if a previous position was recorded, restore that
-; nametable cell to a space so the '>' doesn't smear across rows as the
-; selection moves.
+; ClearOAM mirrors the NES routine (bank_0F.asm:984): fill the entire
+; 256-byte oam buffer with $F8 (Y = $F8 is the NES off-screen marker
+; FF1 uses for "this sprite is hidden") and reset sprindex to 0. The
+; real NES version hardcodes oam at $0200 and unrolls four pages; our
+; oam lives anywhere in BSS, so one loop over all 256 bytes is fine.
 ClearOAM:
     ldx #0
-    lda #$FF
+    lda #$F8
 @oam_loop:
     sta oam, x
     inx
     bne @oam_loop
-
-    ; --- erase previous cursor cell (if any) --------------------------------
-    lda cursor_prev_valid
-    beq @done
-    lda #' '                            ; blank the old cell
-    ldx cursor_prev_lo
-    ldy cursor_prev_hi
-    stx @erase_ptr + 1
-    sty @erase_ptr + 2
-    ldy #0
-@erase_ptr:
-    sta ppu_nt_mirror                   ; patched above with the saved address
-    stz cursor_prev_valid
-@done:
+    stz sprindex
     rts
-
-; DrawCursor on the NES draws a 2x2 sprite at (spr_x, spr_y). We haven't
-; shipped the tile renderer yet, so there's no sprite plane to target.
-; As a stand-in, write '>' into the nametable mirror at the cell that
-; contains the pixel coord (spr_x-8, spr_y) -- the real sprite hangs
-; off the left of the text, so we shift one cell left. Record the cell
-; address so ClearOAM can blank it on the next frame.
-;
-; spr_x is divided by 8 to get column; spr_y likewise for row. The
-; mirror offset is row*32 + col, added to ppu_nt_mirror. Two successive
-; >>3 and <<5 (for row) give a 16-bit offset into the 2 KiB mirror.
-DrawCursor:
-    ; --- col = (spr_x / 8) - 1 ----------------------------------------------
-    lda spr_x
-    lsr
-    lsr
-    lsr
-    sec
-    sbc #1
-    sta cursor_col
-
-    ; --- row = spr_y / 8 ----------------------------------------------------
-    lda spr_y
-    lsr
-    lsr
-    lsr
-    sta cursor_row
-
-    ; --- nt_ptr = ppu_nt_mirror + row*32 + col ------------------------------
-    ; high byte contribution: row >> 3  (= row*32 / 256)
-    lda cursor_row
-    lsr
-    lsr
-    lsr
-    clc
-    adc #>ppu_nt_mirror
-    sta cursor_hi
-
-    ; low byte contribution: (row << 5) | col (col < 32 so no overlap)
-    lda cursor_row
-    asl
-    asl
-    asl
-    asl
-    asl
-    ora cursor_col
-    clc
-    adc #<ppu_nt_mirror
-    sta cursor_lo
-    bcc @store
-    inc cursor_hi
-
-@store:
-    ; record for ClearOAM's next-frame erase
-    lda cursor_lo
-    sta cursor_prev_lo
-    lda cursor_hi
-    sta cursor_prev_hi
-    lda #1
-    sta cursor_prev_valid
-
-    ; write '>' to the cell via self-modified STA
-    lda cursor_lo
-    sta @store_addr + 1
-    lda cursor_hi
-    sta @store_addr + 2
-    lda #'>'
-@store_addr:
-    sta ppu_nt_mirror                   ; patched with cursor_lo/hi above
-    rts
-
-.segment "BSS"
-cursor_col:        .res 1
-cursor_row:        .res 1
-cursor_lo:         .res 1
-cursor_hi:         .res 1
-cursor_prev_lo:    .res 1
-cursor_prev_hi:    .res 1
-cursor_prev_valid: .res 1
-
-.segment "CODE"
 
 ; Audio stubs -- no music driver yet. CallMusicPlay lives in
 ; box_drawing_shim and is already a stub there.

@@ -11,11 +11,11 @@
 .export box_x, box_y, box_wd, box_ht
 .export dest_x, dest_y
 .export ppu_dest
-.export tmp
 .export soft2000
 .export menustall
 .exportzp text_ptr                      ; must be ZP for (text_ptr),Y addressing
 .exportzp clear_ptr                     ; scratch pointer used by clear_ram
+.exportzp tmp                           ; must be ZP for (tmp),Y in Draw2x2Sprite
 .export cur_bank, ret_bank
 .export tmp_hi
 .export char_index
@@ -23,7 +23,7 @@
 .export ch_name, ch_class, ch_ailments, ch_weapons, ch_armor, ch_spells
 .export respondrate, cursor
 .export joy, joy_a, joy_b, joy_start, joy_select, joy_prevdir, joy_ignore
-.export spr_x, spr_y
+.export spr_x, spr_y, sprindex
 .export music_track
 .export oam
 .export intro_ataddr, intro_atbyte, intro_color
@@ -43,6 +43,11 @@ text_ptr:   .res 2
 ; by the ZEROPAGE clear at the tail of clear_ram itself.
 clear_ptr:  .res 2
 
+; Draw2x2Sprite reads the sprite arrangement table via LDA (tmp),Y, so
+; tmp has to sit in zero page. On the NES it's at $10..$1F; flat RAM
+; here so any ZP address is fine. 16 bytes to match FF1's tmp+0..tmp+15.
+tmp:        .res 16
+
 .segment "BSS"
 
 cur_pal:    .res 32       ; FF1 "current palette" -- 32 NES colour indices
@@ -57,7 +62,7 @@ dest_y:     .res 1        ; CoordToNTAddr input / DrawBox inner-body output
 ppu_dest:   .res 2        ; 16-bit PPU target address (low, high)
 
 ; --- Scratch / shadow registers --------------------------------------------
-tmp:        .res 16       ; FF1 tmp+0..tmp+15 scratch area
+; (tmp lives in ZEROPAGE above -- Draw2x2Sprite needs (tmp),Y.)
 soft2000:   .res 1        ; shadow of PPUCTRL, restored after menu draws
 menustall:  .res 1        ; non-zero = MenuCondStall should wait a frame
 
@@ -109,8 +114,13 @@ joy_ignore:  .res 1        ; per-button state used by ProcessJoyButtons to
                            ; (see the long comment in bank_0F.asm:5770+)
 
 ; --- Sprite build scratch --------------------------------------------------
-spr_x:       .res 1        ; sprite X used by DrawCursor (stubbed)
-spr_y:       .res 1        ; sprite Y used by DrawCursor (stubbed)
+; sprindex is the running byte-offset into oam. Draw2x2Sprite reads it,
+; writes four sprite slots (16 bytes) starting at oam[sprindex], and
+; adds 16. ClearOAM resets it to 0 at the top of each frame. Zero-page
+; on the NES ($26); flat RAM here is fine, only loads/stores access it.
+spr_x:       .res 1        ; sprite X
+spr_y:       .res 1        ; sprite Y
+sprindex:    .res 1        ; current byte offset into oam (0, 16, 32, ...)
 
 ; --- Music driver shadow ---------------------------------------------------
 music_track: .res 1        ; desired track; written by IntroTitlePrepare,

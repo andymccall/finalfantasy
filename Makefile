@@ -43,6 +43,17 @@ FF1_INTRO_SRC   := $(FF1_DIS_ROOT)/bin/0D_BF20_introtext.bin
 X16_INTRO_BIN   := $(BUILDDIR)/x16/introtext.bin
 NEO_INTRO_BIN   := $(BUILDDIR)/neo/introtext.bin
 
+# Cursor sprite CHR. 4 tiles (64 bytes of NES 2bpp) live inline in
+# bank_09.asm past the end of bank_09_data.bin, so we extract them via
+# a script, then a platform converter turns the 2bpp CHR into whatever
+# native sprite format the HAL wants. X16 wants VERA 4bpp packed
+# (128 bytes). Neo's converter lands with the Neo sprite HAL.
+FF1_BANK_09_ASM := $(FF1_DIS_ROOT)/bank_09.asm
+CURSOR_CHR      := $(BUILDDIR)/cursor.chr
+CURSOR_EXTRACT  := $(SCRIPTDIR)/extract_cursor_chr.py
+X16_CURSOR_VERA := $(BUILDDIR)/x16/cursor_vera.bin
+X16_CURSOR_CONV := $(SCRIPTDIR)/cursor_to_vera.py
+
 # --- Core routines hooked through scripts/hook_ppu.py ----------------------
 # Files listed here are verbatim FF1 extracts. They have no ca65 directives
 # and no HAL imports, so the wildcard compile rule would fail on them. The
@@ -63,7 +74,10 @@ CORE_HOOKED_SRCS = $(SRCDIR)/core/title_copyright.asm \
                    $(SRCDIR)/core/process_joy_buttons.asm \
                    $(SRCDIR)/core/enter_intro_story.asm \
                    $(SRCDIR)/core/intro_story.asm \
-                   $(SRCDIR)/core/intro_story_joy.asm
+                   $(SRCDIR)/core/intro_story_joy.asm \
+                   $(SRCDIR)/core/draw_2x2_sprite.asm \
+                   $(SRCDIR)/core/draw_cursor.asm \
+                   $(SRCDIR)/core/lut_cursor_2x2_sprite_table.asm
 CORE_HOOKED_INCS = $(patsubst $(SRCDIR)/core/%.asm,$(BUILDDIR)/core/%.inc,$(CORE_HOOKED_SRCS))
 
 # --- Shared sources (platform-agnostic) ------------------------------------
@@ -93,7 +107,7 @@ all: build-x16 build-neo
 
 build-x16: $(X16_OUT)
 
-$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT) $(X16_INTRO_BIN)
+$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT) $(X16_INTRO_BIN) $(X16_CURSOR_VERA)
 	@mkdir -p $(dir $@)
 	$(CA65) --cpu 65C02 -D __X16__ -I $(SRCDIR) -I $(BUILDDIR)/core \
 	        --bin-include-dir $(BUILDDIR)/x16 -o $@ $<
@@ -105,6 +119,7 @@ $(BUILDDIR)/x16/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/joy_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/sprite_shim.o: $(CORE_HOOKED_INCS)
 
 $(X16_OUT): $(X16_OBJS) $(X16_CFG)
 	@mkdir -p $(dir $@)
@@ -129,6 +144,7 @@ $(BUILDDIR)/neo/app/draw_complex_string_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/joy_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/sprite_shim.o: $(CORE_HOOKED_INCS)
 
 $(NEO_RAW): $(NEO_OBJS) $(NEO_CFG)
 	@mkdir -p $(dir $@)
@@ -179,6 +195,18 @@ $(X16_INTRO_BIN):
 $(NEO_INTRO_BIN):
 	@mkdir -p $(dir $@)
 	@cp "$(FF1_INTRO_SRC)" $@
+
+# --- Cursor CHR extraction + conversion ------------------------------------
+# Same space-in-path workaround as the font rules: no file-dep on the
+# bank_09.asm source, only on the script.
+
+$(CURSOR_CHR): $(CURSOR_EXTRACT)
+	@mkdir -p $(dir $@)
+	python3 $(CURSOR_EXTRACT) "$(FF1_BANK_09_ASM)" $@
+
+$(X16_CURSOR_VERA): $(X16_CURSOR_CONV) $(CURSOR_CHR)
+	@mkdir -p $(dir $@)
+	python3 $(X16_CURSOR_CONV) $(CURSOR_CHR) $@
 
 # --- Housekeeping ----------------------------------------------------------
 

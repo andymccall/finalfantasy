@@ -22,7 +22,7 @@
 .import HAL_PollJoy
 
 .import joy, joy_a, joy_b, joy_start, joy_select, joy_ignore
-.import tmp
+.importzp tmp
 
 .export UpdateJoy
 

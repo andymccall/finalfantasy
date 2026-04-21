@@ -29,7 +29,7 @@
 .import box_x, box_y, box_wd, box_ht
 .import dest_x, dest_y
 .import ppu_dest
-.import tmp
+.importzp tmp
 .import soft2000
 .import menustall
 

@@ -9,9 +9,11 @@
 ;   $4014 (OAMDMA) - writing a byte B triggers a 256-byte transfer from
 ;                    CPU $BB00..$BBFF into PPU OAM. FF1 calls this every
 ;                    frame during menu/title loops, right after building
-;                    sprites in a page-aligned RAM buffer. The re-host
-;                    doesn't have an OAM plane (sprites come back with the
-;                    tile/bitmap renderer), so the hook is a no-op.
+;                    sprites in a page-aligned RAM buffer. The hook
+;                    tail-calls into a platform-supplied HAL_OAMFlush so
+;                    the target can read our flat oam[] BSS buffer and
+;                    update its own sprite plane. Platforms without a
+;                    sprite plane yet provide HAL_OAMFlush as RTS.
 ;
 ;   $4015 (APU status / channel enable) - FF1's EnterTitleScreen writes
 ;                    $0F here to force-enable all four pulse/noise/triangle
@@ -23,13 +25,15 @@
 ; here must preserve the same registers.
 ; ---------------------------------------------------------------------------
 
+.import HAL_OAMFlush
+
 .export HAL_APU_4014_Write
 .export HAL_APU_4015_Write
 
 .segment "CODE"
 
 .proc HAL_APU_4014_Write
-    rts
+    jmp HAL_OAMFlush                    ; tail-call: preserves A/X/Y contract
 .endproc
 
 .proc HAL_APU_4015_Write

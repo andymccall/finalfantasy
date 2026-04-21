@@ -44,7 +44,8 @@
 
 .importzp text_ptr                      ; must be ZP for (text_ptr),Y addressing
 .import cur_bank, ret_bank
-.import tmp, tmp_hi
+.importzp tmp
+.import tmp_hi
 .import dest_x
 .import ppu_dest
 .import menustall

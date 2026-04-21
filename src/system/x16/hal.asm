@@ -18,6 +18,7 @@
 .import HAL_PPUInit
 .import HAL_FlushNametable
 .import HAL_LoadTiles
+.import HAL_SpritesInit
 
 .export HAL_Init
 .export HAL_WaitVblank
@@ -101,6 +102,7 @@ basic_stub_end:
 
     jsr HAL_PPUInit
     jsr HAL_LoadTiles
+    jsr HAL_SpritesInit
     rts
 .endproc
 
