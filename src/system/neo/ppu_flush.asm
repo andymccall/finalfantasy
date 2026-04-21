@@ -13,6 +13,7 @@
 ; ---------------------------------------------------------------------------
 
 .import ppu_nt_mirror
+.import neo_col_offset
 
 .export HAL_FlushNametable
 
@@ -71,13 +72,26 @@ flush_col: .res 1
     lda (flush_ptr), y
     beq @next_col                       ; skip transparent/empty cells
 
+    ; FF1 font slots $80..$BF are uploaded into Neo user-font slots
+    ; $C0..$FF; remap those nametable bytes so the console renders our
+    ; glyph instead of its built-in ROM font glyph. Bytes outside this
+    ; range pass through unchanged (e.g. $20 still hits the space).
+    cmp #$C0
+    bcs @xlat_done
+    cmp #$80
+    bcc @xlat_done
+    clc
+    adc #$40
+@xlat_done:
     pha                                 ; save the byte across the API call
 
-    ; --- SET_CURSOR_POS(col, row) -------------------------------------------
+    ; --- SET_CURSOR_POS(col + neo_col_offset, row) --------------------------
 @wait_cursor:
     lda API_COMMAND
     bne @wait_cursor
     lda flush_col
+    clc
+    adc neo_col_offset
     sta API_PARAMETERS + 0
     lda flush_row
     sta API_PARAMETERS + 1

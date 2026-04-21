@@ -25,6 +25,10 @@
 ;                         Stores A into the 2KB nametable mirror at the
 ;                         current latched address, then auto-increments.
 ;                         Clobbers A/X/Y.
+;   HAL_LoadTiles      -- push the build-time-converted FF1 font into the
+;                         host's tile/character memory. Subsequent mirror
+;                         bytes within the font's source range render with
+;                         FF1 glyphs. Clobbers A/X/Y.
 ; ---------------------------------------------------------------------------
 
 .import HAL_Init
@@ -33,3 +37,4 @@
 .import HAL_ShowPaletteStrip
 .import HAL_PPU_2006_Write
 .import HAL_PPU_2007_Write
+.import HAL_LoadTiles

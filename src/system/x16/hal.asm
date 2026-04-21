@@ -17,6 +17,7 @@
 .import main
 .import HAL_PPUInit
 .import HAL_FlushNametable
+.import HAL_LoadTiles
 
 .export HAL_Init
 .export HAL_WaitVblank
@@ -28,7 +29,19 @@ VERA_ADDR_H    = $9F22
 VERA_DATA0     = $9F23
 VERA_CTRL      = $9F25
 VERA_ISR       = $9F27
+VERA_DC_HSCALE = $9F2A                  ; DCSEL=0: horizontal output scale
+VERA_DC_VSCALE = $9F2B                  ; DCSEL=0: vertical output scale
+VERA_L1_HSCROLL_L = $9F37
+VERA_L1_HSCROLL_H = $9F38
 ; Text-screen map defaults to VRAM $1B000 on boot, 2 bytes per cell.
+
+DC_SCALE_2X    = $40                    ; scale_factor = 128 / this, so $40 -> 2x
+
+; Centre the NES 256-wide viewport in 320-wide VERA output: 32-pixel gutter
+; each side. HSCROLL shifts the viewport, so to push the image right we
+; scroll the camera left. -32 in 12-bit two's complement is $FE0.
+HSCROLL_CENTER_L = $E0
+HSCROLL_CENTER_H = $0F
 
 ; ---------------------------------------------------------------------------
 ; PRG header + BASIC stub: 10 SYS2061
@@ -56,6 +69,17 @@ basic_stub_end:
 .proc HAL_Init
     stz VERA_CTRL                       ; DCSEL=0, ADDRSEL=0
 
+    ; --- 2x display scale: 320x240 effective, closer to NES 256x240 ---------
+    lda #DC_SCALE_2X
+    sta VERA_DC_HSCALE
+    sta VERA_DC_VSCALE
+
+    ; --- centre the 32x30 NES region in the 40x30 VERA viewport -------------
+    lda #HSCROLL_CENTER_L
+    sta VERA_L1_HSCROLL_L
+    lda #HSCROLL_CENTER_H
+    sta VERA_L1_HSCROLL_H
+
     ; --- clear the text layer map ($1:B000..$1:EFFF, 16 KiB) ----------------
     stz VERA_ADDR_L
     lda #$B0
@@ -76,6 +100,7 @@ basic_stub_end:
     bne @page
 
     jsr HAL_PPUInit
+    jsr HAL_LoadTiles
     rts
 .endproc
 

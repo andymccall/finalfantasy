@@ -16,9 +16,11 @@
 .import main
 .import HAL_PPUInit
 .import HAL_FlushNametable
+.import HAL_LoadTiles
 
 .export HAL_Init
 .export HAL_WaitVblank
+.export neo_col_offset
 
 ; --- Neo6502 API -----------------------------------------------------------
 ControlPort          = $FF00
@@ -27,10 +29,14 @@ API_FUNCTION         = ControlPort + 1
 API_PARAMETERS       = ControlPort + 4
 
 API_GROUP_CONSOLE    = $02
+API_FN_DEFINE_CHAR   = $05
+API_FN_SCREEN_SIZE   = $09
 API_FN_CLEAR_SCREEN  = $0C
 
 API_GROUP_GRAPHICS   = $05
 API_FN_FRAME_COUNT   = $25
+
+NES_VIEW_COLS        = 32
 
 ; ---------------------------------------------------------------------------
 ; Entry: exec.zip loads the binary at $0800 and jumps there.
@@ -44,6 +50,7 @@ API_FN_FRAME_COUNT   = $25
 .segment "BSS"
 
 last_frame_count: .res 4
+neo_col_offset:   .res 1             ; (console_width - 32) / 2; added by flush
 
 ; ---------------------------------------------------------------------------
 
@@ -62,12 +69,33 @@ last_frame_count: .res 4
     lda API_COMMAND
     bne @wait_clear_done
 
+    ; --- centre the 32-wide NES region in the (wider) console --------------
+    ; Screen Size returns width in param 0, height in param 1. Firmware is
+    ; known to always report a console width >= 32, so no underflow guard.
+    lda #API_FN_SCREEN_SIZE
+    sta API_FUNCTION
+@wait_size:
+    lda API_COMMAND
+    bne @wait_size
+    lda #API_GROUP_CONSOLE
+    sta API_COMMAND
+@wait_size_done:
+    lda API_COMMAND
+    bne @wait_size_done
+
+    lda API_PARAMETERS + 0              ; console width in cells
+    sec
+    sbc #NES_VIEW_COLS
+    lsr                                 ; (width - 32) / 2
+    sta neo_col_offset
+
     stz last_frame_count + 0
     stz last_frame_count + 1
     stz last_frame_count + 2
     stz last_frame_count + 3
 
     jsr HAL_PPUInit
+    jsr HAL_LoadTiles
     rts
 .endproc
 
