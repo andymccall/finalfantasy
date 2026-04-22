@@ -202,10 +202,14 @@ MEMORY {
     MAIN:    start = $0801, size = $8700, file = %O;
     BSSAREA: start = $8A00, size = $1500, type = rw;
 
-    # Banked RAM: one region per bank. File output is still one .PRG,
-    # padded with fill bytes at the bank boundaries. A loader helper
-    # reads this and uploads each bank to RAM at boot.
-    BANK00:  start = $A000, size = $2000, file = %O, fill = yes, bank = 0;
+    # Bank 0 is RESERVED: AM3 pins it at AM3_Init and never hands it out.
+    # Adopters put resident banked-window data here (in FF's case the
+    # MAPDATA row cache). Switchable banks start at bank 1.
+    MAPAREA: start = $A000, size = $1000, type = rw, bank = 0;
+
+    # Banked RAM (switchable): one region per bank. File output is still
+    # one .PRG, padded with fill bytes at the bank boundaries. A loader
+    # helper reads this and uploads each bank to RAM at boot.
     BANK01:  start = $A000, size = $2000, file = %O, fill = yes, bank = 1;
     BANK02:  start = $A000, size = $2000, file = %O, fill = yes, bank = 2;
     # ... up to BANKFF for a full 2MB build
@@ -218,8 +222,8 @@ SEGMENTS {
     RODATA:     load = MAIN,     type = ro;
     DATA:       load = MAIN,     type = rw;
     BSS:        load = BSSAREA,  type = bss, define = yes;
+    MAPDATA:    load = MAPAREA,  type = bss, define = yes;
 
-    BANKED_00:  load = BANK00,   type = ro;
     BANKED_01:  load = BANK01,   type = ro;
     BANKED_02:  load = BANK02,   type = ro;
     # ...
@@ -275,25 +279,31 @@ Ordered so each step is independently testable.
    + `AM3_Init` stub that just stores `0` to `$00`. Wire it into the
    X16 `HAL_Init` path so every build calls it. No behaviour change.
 
-2. **Config fragment.** Extend `cfg/x16.cfg` with BSSAREA + a single
-   `BANK00` region. Verify the build still produces the same bytes for
+2. **Reserve bank 0 for MAPDATA.** MAPDATA already lives at `$A000-$AFFF`.
+   Annotate the `MAPAREA` region in `cfg/x16.cfg` with `bank = 0` so the
+   cfg is self-documenting, and ensure `AM3_Init` is the only code that
+   writes `$00` until switch/restore land. Now `AM3_Init`'s "pin bank 0"
+   has real meaning: it guarantees the row cache is visible.
+
+3. **Primitives.** Implement the real `AM3_SwitchBank`, `AM3_RestoreBank`,
+   `AM3_CallBanked`, and `AM3_CopyFromBank`. Add the saved-bank stack in
+   BSS. No callers yet; unit-test via a scratch banked segment.
+
+4. **Config fragment.** Extend `cfg/x16.cfg` with a `BANK01` region and
+   `BANKED_01` segment mapped at bank 1. Bank 0 is NOT added because it
+   is reserved. Verify the build still produces working bytes for
    resident code; the new region will be empty for now.
 
-3. **First victim: party-gen portrait/name lookup table.** Move
-   `lut_ItemNamePtrTbl` into `BANKED_00`. Rewrite its one caller to go
+5. **First victim: party-gen portrait/name lookup table.** Move
+   `lut_ItemNamePtrTbl` into `BANKED_01`. Rewrite its one caller to go
    through `AM3_CopyFromBank` (or a tiny inline switch/restore wrapper
    since the caller is read-only). Verify party-gen still works.
 
-4. **Map tile groups / map data.** Move the decompressed-map cache
-   (currently at `MAPDATA $A000-$AFFF`) onto AM3. This is a refactor
-   of existing behaviour rather than a new feature; done carefully it
-   shrinks resident RAM usage by 4KB.
-
-5. **Battle engine.** (When we get there.) Battle code is self-contained
+6. **Battle engine.** (When we get there.) Battle code is self-contained
    and called from a single entry point, so it's the canonical banked
-   feature. Lives entirely in `BANKED_01`.
+   feature. Lives entirely in `BANKED_02`.
 
-6. **Menu system, shops, etc.** Each lives in its own bank.
+7. **Menu system, shops, etc.** Each lives in its own bank.
 
 ## Open questions
 
