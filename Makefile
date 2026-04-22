@@ -89,6 +89,17 @@ CURSOR_EXTRACT  := $(SCRIPTDIR)/extract_cursor_chr.py
 X16_CURSOR_VERA := $(BUILDDIR)/x16/cursor_vera.bin
 X16_CURSOR_CONV := $(SCRIPTDIR)/cursor_to_vera.py
 
+# Player mapman sprite CHR. Lives inside bank_02.dat at offset $1000
+# ($9000 when the bank is swapped in). 1 row = 16 tiles = 256 bytes
+# per class; LoadPlayerMapmanCHR (bank_0F.asm:9710) picks the class
+# based on ch_class. First milestone only needs class 0 (Fighter).
+MAPMAN_CHR       := $(BUILDDIR)/bank_02_mapman_chr.bin
+MAPMAN_EXTRACT   := $(SCRIPTDIR)/extract_mapman_chr.py
+X16_MAPMAN_VERA  := $(BUILDDIR)/x16/mapman_vera.bin
+X16_MAPMAN_CONV  := $(SCRIPTDIR)/mapman_to_vera.py
+NEO_MAPMAN_POSES := $(BUILDDIR)/neo/mapman_poses.bin
+NEO_MAPMAN_CONV  := $(SCRIPTDIR)/mapman_to_neo_gfx.py
+
 # Neo graphics plane artefacts. One .gfx per tileset; each file holds
 # 128 16x16 tile images + the cursor sprite. Neo's gfxObjectMemory only
 # has 128 tile slots total, so HAL_LoadTileset swaps files at runtime
@@ -122,7 +133,9 @@ CORE_HOOKED_SRCS = $(SRCDIR)/core/title_copyright.asm \
                    $(SRCDIR)/core/draw_cursor.asm \
                    $(SRCDIR)/core/lut_cursor_2x2_sprite_table.asm \
                    $(SRCDIR)/core/pty_gen.asm \
-                   $(SRCDIR)/core/map_draw.asm
+                   $(SRCDIR)/core/map_draw.asm \
+                   $(SRCDIR)/core/ow_player_sprite.asm \
+                   $(SRCDIR)/core/lut_ow_player_sprite.asm
 CORE_HOOKED_INCS = $(patsubst $(SRCDIR)/core/%.asm,$(BUILDDIR)/core/%.inc,$(CORE_HOOKED_SRCS))
 
 # --- Shared sources (platform-agnostic) ------------------------------------
@@ -152,7 +165,7 @@ all: build-x16 build-neo
 
 build-x16: $(X16_OUT)
 
-$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT) $(X16_MAP_OW) $(X16_OWMAP) $(X16_OWTILESET) $(X16_INTRO_BIN) $(X16_CURSOR_VERA)
+$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT) $(X16_MAP_OW) $(X16_OWMAP) $(X16_OWTILESET) $(X16_INTRO_BIN) $(X16_CURSOR_VERA) $(X16_MAPMAN_VERA)
 	@mkdir -p $(dir $@)
 	$(CA65) --cpu 65C02 -D __X16__ -I $(SRCDIR) -I $(BUILDDIR)/core \
 	        --bin-include-dir $(BUILDDIR)/x16 -o $@ $<
@@ -167,18 +180,23 @@ $(BUILDDIR)/x16/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/sprite_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/pty_gen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/map_draw_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/ow_player_sprite_shim.o: $(CORE_HOOKED_INCS)
 
 $(X16_OUT): $(X16_OBJS) $(X16_CFG)
 	@mkdir -p $(dir $@)
 	$(LD65) -C $(X16_CFG) -o $@ $(X16_OBJS)
 
+# HAL_SpritesInit issues a KERNAL LOAD for mapman_vera.bin at boot, so
+# the file has to sit alongside FF.PRG in whatever directory x16emu
+# treats as device 8 (the CWD when launched without -fsroot). cd into
+# build/x16 so PRG + bin assets are colocated.
 run-x16: build-x16
-	$(X16EMU) -prg $(X16_OUT) -run
+	cd $(dir $(X16_OUT)) && $(X16EMU) -prg FF.PRG -run
 
 # load-x16: launch x16emu with FF.PRG loaded but not auto-run. Type RUN
 # at the BASIC prompt when ready (useful for recording the boot sequence).
 load-x16: build-x16
-	$(X16EMU) -prg $(X16_OUT)
+	cd $(dir $(X16_OUT)) && $(X16EMU) -prg FF.PRG
 
 # --- Neo6502 build ---------------------------------------------------------
 
@@ -199,6 +217,7 @@ $(BUILDDIR)/neo/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/sprite_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/pty_gen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/map_draw_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/ow_player_sprite_shim.o: $(CORE_HOOKED_INCS)
 
 $(NEO_RAW): $(NEO_OBJS) $(NEO_CFG)
 	@mkdir -p $(dir $@)
@@ -315,17 +334,33 @@ $(X16_CURSOR_VERA): $(X16_CURSOR_CONV) $(CURSOR_CHR)
 	@mkdir -p $(dir $@)
 	python3 $(X16_CURSOR_CONV) $(CURSOR_CHR) $@
 
+# Mapman CHR extraction + conversion. Same space-in-path workaround:
+# the extract script takes the disassembly path directly, so make only
+# depends on the script, not the source .dat.
+
+$(MAPMAN_CHR): $(MAPMAN_EXTRACT)
+	@mkdir -p $(dir $@)
+	python3 $(MAPMAN_EXTRACT) "$(FF1_DIS_ROOT)/bank_02.dat" $@
+
+$(X16_MAPMAN_VERA): $(X16_MAPMAN_CONV) $(MAPMAN_CHR)
+	@mkdir -p $(dir $@)
+	python3 $(X16_MAPMAN_CONV) $(MAPMAN_CHR) $@
+
+$(NEO_MAPMAN_POSES): $(NEO_MAPMAN_CONV) $(MAPMAN_CHR)
+	@mkdir -p $(dir $@)
+	python3 $(NEO_MAPMAN_CONV) $(MAPMAN_CHR) $@
+
 $(NEO_TILES_FONT_GFX): $(NEO_TILES_CONV) $(FF1_FONT_RAW) $(CURSOR_CHR)
 	@mkdir -p $(dir $@)
 	python3 $(NEO_TILES_CONV) --mode font \
 	    --tiles $(FF1_FONT_RAW) --tiles-offset $(FF1_FONT_OFF) \
 	    --cursor $(CURSOR_CHR) --output $@
 
-$(NEO_TILES_OW_GFX): $(NEO_TILES_CONV) $(FF1_MAP_OW_RAW) $(CURSOR_CHR)
+$(NEO_TILES_OW_GFX): $(NEO_TILES_CONV) $(FF1_MAP_OW_RAW) $(CURSOR_CHR) $(NEO_MAPMAN_POSES)
 	@mkdir -p $(dir $@)
 	python3 $(NEO_TILES_CONV) --mode map \
 	    --tiles $(FF1_MAP_OW_RAW) --tiles-offset $(FF1_MAP_OW_OFF) \
-	    --cursor $(CURSOR_CHR) --output $@
+	    --cursor $(CURSOR_CHR) --mapman $(NEO_MAPMAN_POSES) --output $@
 
 # --- Housekeeping ----------------------------------------------------------
 

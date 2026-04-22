@@ -15,13 +15,16 @@ Output layout (single .gfx, loaded to gfxObjectMemory at runtime):
     [0..255]  256-byte header
         [0]   = 1             (format version)
         [1]   = 128           (16x16 tile count)
-        [2]   = 1             (16x16 sprite count -- always the cursor)
+        [2]   = N             (16x16 sprite count: 1 cursor, +8 mapman in map mode)
         [3]   = 0             (32x32 sprite count)
     [256..]   128 tile images (128 bytes each = 16384 bytes)
     [..]      1 cursor sprite (128 bytes)
+    [..]      (map mode) 8 mapman pose images (128 bytes each)
 
 Both modes ship the cursor sprite at the end so HAL_LoadTileset can
-swap the tile region without losing the cursor image.
+swap the tile region without losing the cursor image. Map mode also
+appends 8 Fighter mapman poses (precomposed by mapman_to_neo_gfx.py)
+so the on-foot player can render on the overworld.
 
 Note: we cannot add a 129th "blank" tile because Neo Draw Image treats
 image ids >= $80 as sprites, not tiles -- so any attempt to paint
@@ -153,6 +156,8 @@ def main():
                     help="byte offset into the tiles blob "
                          "(default 0; font mode typically uses 0x800)")
     ap.add_argument("--cursor", required=True, help="cursor CHR (64 bytes)")
+    ap.add_argument("--mapman", help="precomposed mapman poses (8 * 128 bytes, "
+                                      "map mode only; appended after cursor)")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
@@ -167,12 +172,24 @@ def main():
     if len(cursor_data) != 64:
         sys.exit(f"{args.cursor}: expected 64 bytes, got {len(cursor_data)}")
 
+    mapman_data = b""
+    if args.mapman:
+        if args.mode != "map":
+            sys.exit("--mapman only valid in --mode map")
+        with open(args.mapman, "rb") as f:
+            mapman_data = f.read()
+        if len(mapman_data) != 8 * IMG16_BYTES:
+            sys.exit(f"{args.mapman}: expected {8 * IMG16_BYTES} bytes, "
+                     f"got {len(mapman_data)}")
+
     palette_map = FONT_MAP if args.mode == "font" else MAP_MAP
+
+    sprite_count = 1 + (8 if mapman_data else 0)
 
     header = bytearray(HEADER_SIZE)
     header[0] = 1
     header[1] = FF1_TILE_COUNT
-    header[2] = 1
+    header[2] = sprite_count
     header[3] = 0
 
     with open(args.output, "wb") as f:
@@ -181,6 +198,8 @@ def main():
             base = args.tiles_offset + t * 16
             f.write(pack_tile_upper_left(tile_data[base:base + 16], palette_map))
         f.write(pack_cursor(cursor_data))
+        if mapman_data:
+            f.write(mapman_data)
 
 
 if __name__ == "__main__":

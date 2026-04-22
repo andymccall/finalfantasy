@@ -182,14 +182,12 @@ title_palette:
     .byte $0F, $00, $01, $01            ; group 1: faded-out (blue on blue)
     .byte $0F, $00, $01, $01            ; group 2: animating (starts blue)
     .byte $0F, $00, $01, $30            ; group 3: fully faded in (blue border)
-    ; Sprite palette 0 lands in VERA slots 16..19. With sprite palette
-    ; offset = 1 on the cursor, nibbles 1/2/3 of the cursor CHR resolve
-    ; to slots 17/18/19. FF1's NES sprite palette 3 on the title screen
-    ; is $0F/$30/$10/$00 (black/white/light-grey/mid-grey); VERA sprite
-    ; palette-offset granularity is 16 slots, so we flatten those values
-    ; into sprite palette 0 instead -- every sprite in this scene uses
-    ; the same four colours in our port.
-    .byte $0F, $30, $10, $00            ; sprite palette 0: cursor shading
+    ; Sprite palettes. HAL_OAMFlush now dispatches NES sprite attr bits
+    ; 1:0 to VERA palette offset (4 + N), so each NES sprite palette
+    ; maps 1:1 to a distinct VERA slot base. FF1's title-screen cursor
+    ; LUT uses palette 3 ($0F/$30/$10/$00 = black/white/light-grey/
+    ; mid-grey); other sprite palettes are unused on the title screen.
+    .byte $0F, $30, $30, $30            ; sprite palette 0 (unused)
     .byte $0F, $30, $30, $30            ; sprite palette 1 (unused)
     .byte $0F, $30, $30, $30            ; sprite palette 2 (unused)
-    .byte $0F, $30, $30, $30            ; sprite palette 3 (unused)
+    .byte $0F, $30, $10, $00            ; sprite palette 3: cursor shading

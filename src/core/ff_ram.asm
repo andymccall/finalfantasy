@@ -35,7 +35,7 @@
 .export unk_FE, NTsoft2000
 
 .export mapflags, mapdraw_x, mapdraw_y, mapdraw_ntx, mapdraw_nty, mapdraw_job
-.export facing, move_speed, scroll_y, scroll_x
+.export facing, move_speed, move_ctr_x, move_ctr_y, scroll_y, scroll_x
 .export ow_scroll_x, ow_scroll_y, sm_scroll_x, sm_scroll_y
 .export sm_player_x, sm_player_y, vehicle, cur_map
 .export draw_buf_ul, draw_buf_ur, draw_buf_dl, draw_buf_dr, draw_buf_attr
@@ -200,6 +200,8 @@ mapdraw_nty: .res 1        ; NT row target
 mapdraw_job: .res 1        ; 0 = idle, 1 = attrs pending, 2 = tiles pending
 facing:      .res 1        ; player facing bits (1=R, 2=L, 4=D, 8=U)
 move_speed:  .res 1        ; pixels per frame (0 = not moving)
+move_ctr_x:  .res 1        ; pixels remaining in horizontal step (0 = idle)
+move_ctr_y:  .res 1        ; pixels remaining in vertical step (0 = idle)
 scroll_y:    .res 1        ; NT row of top of viewport (0..14)
 scroll_x:    .res 1        ; NT column of left of viewport (0..31)
 ow_scroll_x: .res 1        ; OW map-space camera X (0..255)

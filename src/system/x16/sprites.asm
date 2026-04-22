@@ -1,51 +1,49 @@
 ; ---------------------------------------------------------------------------
-; sprites.asm - X16 HAL sprite plane (cursor only, for now).
+; sprites.asm - X16 HAL sprite plane (cursor + player mapman).
 ; ---------------------------------------------------------------------------
 ; FF1 builds sprite OAM in a page-aligned RAM buffer, then writes the
 ; buffer's page number to $4014 (OAMDMA) to upload it. On real hardware
 ; that DMAs 256 bytes to PPU OAM. We trap the $4014 write and call
-; HAL_OAMFlush, which on X16 walks the first 16 bytes of oam (four
-; sprites -- the 2x2 cursor) and pushes them into VERA sprite attribute
-; memory.
+; HAL_OAMFlush, which walks the first 32 bytes of oam (8 NES sprites --
+; enough for a 2x2 cursor *or* a 2x2 mapman plus a little headroom) and
+; pushes them into VERA sprite attribute memory.
 ;
 ; VERA sprites:
-;   - Sprite attribute table:  VRAM $1:FC00, 8 bytes per sprite, 128 max.
+;   - Sprite attribute table: VRAM $1:FC00, 8 bytes per sprite, 128 max.
 ;   - Per-sprite attr layout (from the X16 Programmer's Reference):
-;       +0/+1: sprite data VRAM address bits 4:16 (bit-shifted >> 5)
-;       +2/+3: X pos (16-bit, sign-extended 10 bits)
+;       +0/+1: sprite data VRAM address (shifted >> 5, so 32-byte granular)
+;       +2/+3: X pos  (16-bit, sign-extended 10 bits)
 ;       +4/+5: Y pos
-;       +6   : collision mask [7:4] | z-depth [3:2] | V-flip [1] | H-flip [0]
+;       +6   : collision [7:4] | z-depth [3:2] | V-flip [1] | H-flip [0]
 ;       +7   : height [7:6] | width [5:4] | palette offset [3:0]
-;   - Each sprite here is 8x8, so bytes +6/+7 are set once at init and
-;     left alone; only X/Y and the "hide offscreen" Y-trick change per
-;     frame.
-;   - Sprites are enabled in DC_VIDEO ($9F29, DCSEL=0) bit 6.
 ;
-; VRAM layout we claim:
-;   $1:3000..$1:307F  cursor sprite tile data (4 tiles * 32 bytes, 4bpp 8x8)
-;   Sprite data address is a 12-bit field covering VRAM bits 16:5
-;   (32-byte granularity). For VRAM $13000 (17 bits: 1_0011_0000_0000_0000):
-;       byte +0 = bits 12:5 = %10000000 = $80
-;       byte +1 = bits 16:13 (low nibble) | Mode bit (bit 7 = 0 -> 4bpp)
-;                 = %0000_1001 = $09
-;   Each successive tile is +32 bytes in VRAM = +1 in the 12-bit field,
-;   so sprite N data addr lo = $80 + N (stays in byte +0, byte +1 = $09).
+; VRAM layout we claim for sprite pixel data:
+;   $13000..$1307F  cursor sprite tile data    (4 tiles * 32 bytes)
+;   $13080..$1327F  mapman sprite tile data   (16 tiles * 32 bytes)
 ;
-; NES-to-X16 coord map: VERA sprite X/Y live in the 320x240 source
-; coordinate space (DC_HSCALE/VSCALE scale the composited output, not
-; the source). Text layer cells are 8x8 in the same 320x240 space, so
-; NES cell (col, row) lands at source (col*8, row*8). The text layer
-; is additionally shifted right by 32 source pixels via L1 HSCROLL to
-; centre the 256-wide NES viewport in 320 source pixels; sprites don't
-; follow HSCROLL, so we add the same 32-pixel gutter explicitly.
+; The data-addr field is VRAM bits 16:5 (tile = 32 bytes). For $13000
+; the field value is $980 (byte +0 = $80, byte +1 = $09). Each following
+; tile adds 1 to byte +0 (cursor tile N -> $80+N, mapman tile N -> $84+N).
 ;
-; Mapping: NES (nx, ny) -> sprite (32 + nx, ny + 1). The +1 undoes the
-; NES convention that OAM Y stores "display_y - 1".
+; NES tile ID -> VERA data addr dispatch:
+;   $00..$0F (mapman) -> addr_lo = $84 + tile
+;   $F0..$F3 (cursor) -> addr_lo = tile - $70 (= $80 + (tile-$F0))
+; Both share addr_hi = $09 (bit 7 = Mode = 0 = 4bpp).
 ;
-; Palette: sprites use VERA palette slots 16..31 (offset 1 in the
-; 16-colour granularity). We plant the cursor foreground (white) at
-; slot 17 so a 2bpp nibble value of 1 renders as white. Slot 16 is
-; transparent by VERA convention (nibble 0 = transparent on sprites).
+; NES OAM attr byte -> VERA byte +6 / byte +7:
+;   attr bit 0 (palette select 0/1) -> VERA byte +7 palette offset (4 or 5)
+;   attr bit 6 (H-flip)              -> VERA byte +6 bit 0
+;   attr bit 7 (V-flip)              -> VERA byte +6 bit 1
+;   (sprite enabled at z-depth 3 via byte +6 bits 3:2 = %11 = $0C)
+;
+; Palettes:
+;   Cursor + mapman both read NES sprite palette 0 at VERA slots $40..$43;
+;   mapman also uses NES sprite palette 1 at VERA slots $50..$53 (attr
+;   bit 0 = 1). palette.asm's splay() already maps NES sprite palette 0
+;   and 1 into those VERA slots.
+;
+; NES-to-X16 coord map: NES (nx, ny) -> sprite (32 + nx, ny + 1). The +1
+; undoes the NES convention that OAM Y stores "display_y - 1".
 ; ---------------------------------------------------------------------------
 
 .import oam
@@ -58,33 +56,43 @@ VERA_ADDR_M = $9F21
 VERA_ADDR_H = $9F22
 VERA_DATA0  = $9F23
 VERA_CTRL   = $9F25
-VERA_DC_VIDEO = $9F29                   ; DCSEL=0
+VERA_DC_VIDEO = $9F29
 
 SPRITE_ATTR_L = $00                     ; $1FC00 bits 7:0
 SPRITE_ATTR_M = $FC
 SPRITE_ATTR_H = $11                     ; bank 1, stride +1
 
-SPRITE_TILE_L = $00                     ; $13000 bits 7:0
-SPRITE_TILE_M = $30
-SPRITE_TILE_H = $11                     ; bank 1, stride +1
+; Cursor tile data starts at VRAM $13000 -> data addr $980.
+CURSOR_TILE_L = $00
+CURSOR_TILE_M = $30
+CURSOR_TILE_H = $11
+CURSOR_DATA_ADDR_LO_BASE = $80
+DATA_ADDR_HI             = $09          ; bit 7 = Mode = 0 = 4bpp
 
-; VRAM $13000. Byte +0 holds address bits 12:5; byte +1 holds bits
-; 16:13 in its low nibble (bit 7 of the byte is the Mode flag: 0=4bpp).
-; $13000 = 0b1_0011_00000_0000_0000 => bits 16:13 = %1001 = $9,
-; bits 12:5 = %10000000 = $80.
-SPRITE_DATA_ADDR_L = $80
-SPRITE_DATA_ADDR_H = $09
+; Mapman tile data starts at VRAM $13080 -> data addr $984.
+MAPMAN_TILE_L = $80
+MAPMAN_TILE_M = $30
+MAPMAN_TILE_H = $11
+MAPMAN_DATA_ADDR_LO_BASE = $84
 
-; Sprite palette. The cursor CHR uses nibble values 1/2/3 (see
-; scripts/cursor_to_vera.py). With palette offset 4 in byte +7 those
-; nibbles index VERA palette slots 65/66/67 (slot 64 = nibble 0 =
-; transparent). palette.asm's splay() maps NES sprite palette 0
-; ($3F10..$3F13) to VERA slots $40..$43 (= 64..67), so DrawPalette's
-; writes land exactly where the cursor expects to read them. FF1's
-; title-screen cursor wants NES sprite palette 3 ($0F/$30/$10/$00);
-; VERA's palette-offset granularity is 16 slots per sprite, so we
-; stage those four colours into NES sprite palette 0 in main.asm's
-; title_palette LUT instead.
+; How many NES OAM slots HAL_OAMFlush walks. 8 = cursor (0..3) + mapman
+; (4..7); bump later when we add vehicle / NPC sprites.
+OAM_SLOTS_WALKED = 8
+
+; KERNAL APIs used for runtime mapman-pixel load.
+;   SETLFS: A = logical file, X = device, Y = secondary addr
+;   SETNAM: A = name length, X/Y = name ptr
+;   LOAD:   A = 3 -> VRAM bank 1 ($10000 + XY), X/Y = VRAM offset
+SETLFS = $FFBA
+SETNAM = $FFBD
+LOAD   = $FFD5
+
+; mapman_vera.bin lives on the host FS next to FF.PRG. We load it once
+; at boot straight into VRAM $13080 instead of shipping it in the PRG:
+; 512 bytes of RODATA is enough to push BSS past $9F00 (the I/O gap),
+; and cursor+mapman are our first two of many sprite assets. Runtime
+; load is the pattern that scales.
+MAPMAN_FILENAME_LEN = 15
 
 .segment "RODATA"
 
@@ -94,31 +102,50 @@ cursor_sprite_pixels_end:
 
 CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
 
+mapman_filename:
+    .byte "MAPMAN_VERA.BIN"
+
 .segment "CODE"
 
 ; HAL_SpritesInit -----------------------------------------------------------
-; One-shot at boot: upload cursor tile pixels, set palette slot 17 to
-; white, program the 4 sprite attribute entries' static fields, enable
-; the sprite plane.
+; One-shot at boot: upload cursor + mapman tile pixels, program 8 sprite
+; attribute entries (all hidden), enable the sprite plane.
 .proc HAL_SpritesInit
     ; --- upload cursor tile pixels to VRAM $13000 ---------------------------
-    lda #SPRITE_TILE_L
+    lda #CURSOR_TILE_L
     sta VERA_ADDR_L
-    lda #SPRITE_TILE_M
+    lda #CURSOR_TILE_M
     sta VERA_ADDR_M
-    lda #SPRITE_TILE_H
+    lda #CURSOR_TILE_H
     sta VERA_ADDR_H
 
     ldx #0
-@pix_loop:
+@cursor_pix:
     lda cursor_sprite_pixels, x
     sta VERA_DATA0
     inx
     cpx #CURSOR_PIXEL_BYTES
-    bne @pix_loop
+    bne @cursor_pix
 
-    ; --- program 4 sprite attributes, all hidden (y = $3FF) -----------------
-    ; Sprite slot 0..3 at $1FC00, $1FC08, $1FC10, $1FC18.
+    ; --- load mapman tile pixels straight from host FS into VRAM $13080 -----
+    ; SETNAM -> filename; SETLFS with sa=2 -> headerless LOAD;
+    ; LOAD with A=3 -> VRAM bank 1 (physical $10000 + XY).
+    lda #MAPMAN_FILENAME_LEN
+    ldx #<mapman_filename
+    ldy #>mapman_filename
+    jsr SETNAM
+
+    lda #1                                  ; logical file
+    ldx #8                                  ; device 8 (SD / host FS)
+    ldy #2                                  ; secondary = 2 -> headerless
+    jsr SETLFS
+
+    lda #3                                  ; A=3 -> load into VRAM bank 1
+    ldx #MAPMAN_TILE_L                      ; offset low  ($80)
+    ldy #MAPMAN_TILE_M                      ; offset high ($30)
+    jsr LOAD
+
+    ; --- program 8 sprite attributes, all hidden -------------------------
     lda #SPRITE_ATTR_L
     sta VERA_ADDR_L
     lda #SPRITE_ATTR_M
@@ -128,34 +155,21 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
 
     ldx #0
 @attr_loop:
-    ; +0/+1: data addr (bits 16:5 of VRAM). Each successive tile is +32
-    ; bytes, which in the shifted-by-5 encoding is +1 in the low byte.
-    ; Byte +1 bit 7 is the Mode flag (0 = 4bpp); the top nibble of the
-    ; byte carries address bits 16:13, which is 0 for our $13000 base.
-    txa                                 ; sprite index 0..3
-    clc
-    adc #SPRITE_DATA_ADDR_L
-    sta VERA_DATA0
-    lda #SPRITE_DATA_ADDR_H
-    sta VERA_DATA0
-    ; +2/+3: X = 0
-    stz VERA_DATA0
-    stz VERA_DATA0
-    ; +4/+5: Y = 0
-    stz VERA_DATA0
-    stz VERA_DATA0
-    ; +6: z-depth = 0 (sprite disabled), no flip, no collision. The
-    ; OAMDMA hook re-enables (z=3) each frame for slots with visible
-    ; NES OAM entries and disables the rest.
-    stz VERA_DATA0
-    ; +7: size 8x8 (height=0, width=0), palette offset 4 (slots 64..79).
-    ; palette.asm splays NES sprite palette 0 ($3F10..$3F13) into VERA
-    ; slots $40..$43, so offset 4 (slot base 64) lines cursor nibbles
-    ; 0..3 up with NES sprite-palette colours 0..3.
+    ; +0..+5 left as zero; HAL_OAMFlush rewrites them every frame.
+    ; +6 = 0 -> z-depth 0 -> sprite off until first OAM push.
+    ; +7 = palette offset. Defaults to 4 (NES sprite palette 0) -- the
+    ; flush rewrites this per slot when it reprograms the attribute row.
+    stz VERA_DATA0                      ; +0
+    stz VERA_DATA0                      ; +1
+    stz VERA_DATA0                      ; +2
+    stz VERA_DATA0                      ; +3
+    stz VERA_DATA0                      ; +4
+    stz VERA_DATA0                      ; +5
+    stz VERA_DATA0                      ; +6 = 0 -> disabled
     lda #$04
-    sta VERA_DATA0
+    sta VERA_DATA0                      ; +7 = palette offset 4
     inx
-    cpx #4
+    cpx #OAM_SLOTS_WALKED
     bne @attr_loop
 
     ; --- enable sprite plane in DC_VIDEO -----------------------------------
@@ -167,24 +181,14 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
 .endproc
 
 ; HAL_OAMFlush --------------------------------------------------------------
-; Called on every NES $4014 OAMDMA write. Walks oam[0..15] (the 2x2
-; cursor: 4 sprites of 4 bytes each), translates each to VERA sprite
-; attribute coords, and writes bytes +2..+5 of each attribute entry.
-; The static fields (+0/+1/+6/+7) are left alone from init.
+; Walk OAM_SLOTS_WALKED NES sprites, push each into its VERA attribute row.
 ;
-; NES OAM entry: byte 0 = Y, 1 = tile, 2 = attr, 3 = X.
-; NES Y stores (display_y - 1), so +1 to the Y we read.
-; Hide sprite: if nes_y >= $EF (real NES off-screen marker is $F0+; FF1
-; uses $FF in ClearOAM), write Y=$3FF.
-; The NES OAM tile ID lets any sprite slot reference any tile, so we
-; must translate per slot -- the cursor LUT, for instance, puts UL in
-; slot 0 but DL in slot 1. Our CHR lays tiles out in linear NES order
-; starting at VRAM $13000, so for NES tile $F0+N the data-addr field
-; bits 16:5 = $980 + N: byte +0 = $80 + N = T - $70, byte +1 = $09
-; (valid only for T in $F0..$F3; extending to other sprite tiles is a
-; later step).
+; Registers:
+;   X = sprite slot index (0..OAM_SLOTS_WALKED-1)
+;   Y = walking index into oam[] (slot*4 + field)
+;
 .proc HAL_OAMFlush
-    ldx #0                              ; sprite index 0..3
+    ldx #0
 @slot:
     ; --- point VERA at attr +0 of sprite[x] ($1FC00 + x*8) ------------------
     txa
@@ -203,7 +207,7 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
     txa
     asl
     asl                                 ; x * 4
-    tay                                 ; oam byte index for oam+0 (Y)
+    tay                                 ; oam+0 (Y coord)
 
     ; --- hidden? (FF1 marks hidden sprites with Y >= $EF) -------------------
     lda oam, y
@@ -213,11 +217,20 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
     ; --- visible: +0/+1 data addr from NES tile ID --------------------------
     iny                                 ; oam+1 = tile ID
     lda oam, y
+    cmp #$80                            ; cursor tiles are $F0..$F3 (>= $80)
+    bcs @cursor_tile
+    ; mapman: $00..$0F -> addr_lo = $84 + tile
+    clc
+    adc #MAPMAN_DATA_ADDR_LO_BASE
+    bra @wrote_lo
+@cursor_tile:
+    ; cursor: $F0..$F3 -> addr_lo = tile - $70
     sec
-    sbc #$70                            ; T - $70 = $80 + (T - $F0)
+    sbc #$70
+@wrote_lo:
     sta VERA_DATA0                      ; attr +0 = addr lo
-    lda #SPRITE_DATA_ADDR_H
-    sta VERA_DATA0                      ; attr +1 = mode 4bpp (bit 7 = 0), addr hi = $09
+    lda #DATA_ADDR_HI
+    sta VERA_DATA0                      ; attr +1 = mode 4bpp, addr hi = $09
 
     ; --- +2/+3: X = 32 + NES X (oam+3) --------------------------------------
     iny
@@ -234,7 +247,7 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
     txa
     asl
     asl
-    tay
+    tay                                 ; oam+0
     lda oam, y
     clc
     adc #1
@@ -242,27 +255,48 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
     lda #0
     adc #0
     sta VERA_DATA0                      ; attr +5 = Y high
-    ; +6: enable at z-depth 3 (front of both layers).
-    lda #$0C
-    sta VERA_DATA0
+
+    ; --- +6: z-depth 3 + H/V flip from NES attr bits 6/7 --------------------
+    iny
+    iny                                 ; oam+2 = attr byte
+    lda oam, y
+    and #$C0                            ; keep flip bits
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr                                 ; attr bits 7/6 -> bits 1/0
+    ora #$0C                            ; z-depth 3 (%1100) in bits 3:2
+    sta VERA_DATA0                      ; attr +6
+
+    ; --- +7: palette offset from NES attr bits 1:0 -------------------------
+    ; NES sprite attr bits 1:0 select one of 4 sprite palettes. splay()
+    ; in palette.asm maps NES sprite palettes 0..3 to VERA palette slots
+    ; $40/$50/$60/$70, so VERA palette offset = 4 + N.
+    lda oam, y
+    and #$03
+    clc
+    adc #$04
+    sta VERA_DATA0                      ; attr +7
     bra @next
 
 @hide:
-    ; Skip +0/+1 (keep whatever addr is there) and write +2..+6 with
-    ; everything zero -> z-depth=0 disables the sprite regardless.
-    ; We still need to advance the VERA address through +0/+1 first;
-    ; STZ two bytes there as a no-op rewrite.
-    stz VERA_DATA0                      ; attr +0
-    stz VERA_DATA0                      ; attr +1
-    stz VERA_DATA0                      ; attr +2
-    stz VERA_DATA0                      ; attr +3
-    stz VERA_DATA0                      ; attr +4
-    stz VERA_DATA0                      ; attr +5
-    stz VERA_DATA0                      ; attr +6 = 0 -> z-depth=0
+    ; Write +0..+6 as zero -> z-depth 0 hides regardless of addr. Skip +7.
+    stz VERA_DATA0                      ; +0
+    stz VERA_DATA0                      ; +1
+    stz VERA_DATA0                      ; +2
+    stz VERA_DATA0                      ; +3
+    stz VERA_DATA0                      ; +4
+    stz VERA_DATA0                      ; +5
+    stz VERA_DATA0                      ; +6 = 0 -> disabled
+    stz VERA_DATA0                      ; +7 (palette offset, doesn't matter)
 
 @next:
     inx
-    cpx #4
-    bne @slot
+    cpx #OAM_SLOTS_WALKED
+    beq @done
+    jmp @slot
+@done:
     rts
 .endproc

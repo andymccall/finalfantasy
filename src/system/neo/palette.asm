@@ -84,8 +84,18 @@ palette_rgb:
                                         ;     screen's sprite palette 3 is
                                         ;     $0F/$30/$10/$00, see
                                         ;     LoadBattleSpritePalettes)
+    .byte $CC, $77, $22                 ; 5 : NES $27 skin orange
+                                        ;     (Fighter mapman face/legs,
+                                        ;     OW sprite palette 1 colour 2)
+    .byte $EE, $77, $77                 ; 6 : NES $36 light red
+                                        ;     (Fighter mapman highlights,
+                                        ;     OW sprite palettes 0+1 colour 3)
+    .byte $00, $00, $00                 ; 7 : opaque black
+                                        ;     (mapman outline -- slot 0 is
+                                        ;     transparent for sprite nibble
+                                        ;     0; pixel value 1 resolves here)
 
-PALETTE_COLOURS = 5
+PALETTE_COLOURS = 8
 
 ; NES colour-index -> (R, G, B) lookup. Used by HAL_PalettePush to
 ; reprogram Neo slot 3 when FF1 writes a new value to any BG colour-3
