@@ -1,51 +1,76 @@
 ; ---------------------------------------------------------------------------
 ; pty_gen_shim.asm - Translator wrapper for NewGamePartyGeneration screen.
 ; ---------------------------------------------------------------------------
-; The verbatim extract in pty_gen.inc pulls four routines from bank_0E.asm:
+; pty_gen.inc carries the verbatim extracts:
 ;
-;   PtyGen_DrawScreen   (bank_0E.asm:2683-2696)
-;   PtyGen_DrawBoxes    (bank_0E.asm:3016-3044)
-;   PtyGen_DrawText     (bank_0E.asm:3055-3070)  -- falls through into...
-;   PtyGen_DrawOneText  (bank_0E.asm:3093-3144)
-;   lut_PtyGenBuf       (bank_0E.asm:3380-3384)
+;   NewGamePartyGeneration  (bank_0E.asm:2581-2626 -- 4-character loop)
+;   DoPartyGen_OnCharacter  (bank_0E.asm:2713-2751 -- per-char input loop)
+;   PtyGen_Frame            (bank_0E.asm:2933-2946 -- per-frame sprite+DMA)
+;   PtyGen_Joy              (bank_0E.asm:2987-3006 -- UpdateJoy + SFX)
+;   PtyGen_DrawCursor       (bank_0E.asm:3155-3161)
+;   PtyGen_DrawScreen       (bank_0E.asm:2683-2696)
+;   PtyGen_DrawBoxes / PtyGen_DrawText / PtyGen_DrawOneText
+;   lut_PtyGenBuf
 ;
-; EnterNewGame seeds the ptygen buffer from lut_PtyGenBuf, calls
-; PtyGen_DrawScreen once, then spins on HAL_WaitVblank. The four class
-; boxes render with class-name strings inside; no input loop, no cursor,
-; no name-input sub-screen.
+; Stubs supplied here (unreached by this milestone or out of scope):
+;   LoadNewGameCHRPal   -- CHR/palette upload is done once at boot via
+;                          HAL_LoadTiles + DrawPalette.
+;   PtyGen_DrawChars    -- the four 2x3 class-preview sprites need CHR
+;                          from BANK_BTLCHR which isn't wired up yet.
+;                          Return immediately so the cursor is the only
+;                          sprite on screen.
+;   DoNameInput         -- name-entry sub-screen (bank_0E.asm:2766) is a
+;                          separate milestone. Auto-fills the four name
+;                          bytes with spaces and CLC/RTS to let the
+;                          4-character loop advance.
 ;
-; DrawComplexString's $02 control code ("item name") is what paints the
-; class names. Item IDs $F0..$F5 in lut_ItemNamePtrTbl (populated in
-; draw_complex_string_shim.asm) resolve to the six class strings.
+; The cur_pal+$1/$2/$3 writes at the top of NewGamePartyGeneration shuffle
+; BG palette group 0 -- which isn't drawn to on the party-gen screen
+; (FF1 draws boxes with group 3). The writes still land in cur_pal so the
+; verbatim code runs unchanged; the HAL palette filter ignores group-0
+; slots because they don't match the colour-3 slot mask.
 ; ---------------------------------------------------------------------------
+
+.feature force_range
 
 .import HAL_PPU_2001_Write
 .import HAL_APU_4014_Write
+.import HAL_APU_4015_Write
 .import HAL_WaitVblank
 
 .import ClearNT
+.import ClearOAM
 .import TurnMenuScreenOn_ClearOAM
 .import DrawBox
 .import DrawComplexString
+.import DrawCursor
+.import WaitForVBlank_L
+.import CallMusicPlay
+.import UpdateJoy
+.import PlaySFX_MenuSel
+.import PlaySFX_MenuMove
 
 .importzp text_ptr
 .importzp tmp
 .import cur_bank, ret_bank
+.import cur_pal
 .import box_x, box_y, box_wd, box_ht
 .import dest_x, dest_y
 .import menustall
 .import soft2000
 .import format_buf
 .import ptygen
+.import char_index
 .import oam
+.import spr_x, spr_y
 .import joy, joy_a, joy_b, joy_prevdir
 
 .export EnterNewGame
-.export NewGamePartyGeneration
 .export PtyGen_DrawScreen
 .export PtyGen_DrawBoxes
 .export PtyGen_DrawText
 .export PtyGen_DrawOneText
+.export NewGamePartyGeneration
 
 ; Field offsets within each 16-byte ptygen record.
 ptygen_class   = ptygen + $0
@@ -69,32 +94,36 @@ BANK_THIS = $00
 ; EnterNewGame is the host-side replacement for the bank_0F.asm:157-161
 ; sequence (SwapPRG_L + NewGamePartyGeneration + NewGame_LoadStartingStats).
 ; NewGame_LoadStartingStats and everything downstream (overworld start)
-; isn't wired up yet, so we spin on HAL_WaitVblank after the draw.
+; isn't wired up yet, so we spin on HAL_WaitVblank after the loop returns.
+; The DMA push after the return clears any stale sprites left in the
+; host sprite plane (e.g. the title-screen cursor).
 EnterNewGame:
     jsr NewGamePartyGeneration
-    ; PtyGen_DrawScreen ends in TurnMenuScreenOn_ClearOAM, which fills
-    ; the oam BUFFER with $F8 but doesn't DMA it to the host sprite
-    ; plane. Push the cleared buffer through the sprite HAL now so the
-    ; title-screen cursor stops being visible.
+    jsr ClearOAM
     lda #>oam
     jsr HAL_APU_4014_Write
 @spin:
     jsr HAL_WaitVblank
     bra @spin
 
-; Slimmed-down host version of NewGamePartyGeneration
-; (bank_0E.asm:2581-2673). The NES original loops over 4 characters with
-; full input handling; this version stages the ptygen buffer and draws
-; the screen once. Class-cycling + name input are not implemented here.
-NewGamePartyGeneration:
-    ; Seed the ptygen buffer from the LUT ($40 bytes).
-    ldx #$3F
-@copy:
-    lda lut_PtyGenBuf, x
-    sta ptygen, x
-    dex
-    bpl @copy
+LoadNewGameCHRPal:
+    rts
 
-    jmp PtyGen_DrawScreen
+PtyGen_DrawChars:
+    rts
+
+; Auto-confirm name input: fill the 4-byte name with spaces ($FF is the
+; NES "blank" tile the original code would leave in place if the user
+; cleared every letter on the name-entry screen), clear carry to signal
+; "name accepted", and RTS back into the character loop.
+DoNameInput:
+    ldx char_index
+    lda #$FF
+    sta ptygen_name + 0, x
+    sta ptygen_name + 1, x
+    sta ptygen_name + 2, x
+    sta ptygen_name + 3, x
+    clc
+    rts
 
 .include "pty_gen.inc"

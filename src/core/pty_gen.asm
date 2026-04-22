@@ -1,3 +1,136 @@
+NewGamePartyGeneration:
+    LDA #$00                ; turn off the PPU
+    STA $2001
+    LDA #$0F                ; turn ON the audio (it should already be on, though
+    STA $4015               ;  so this is kind of pointless)
+
+    JSR LoadNewGameCHRPal   ; Load up all the CHR and palettes necessary for the New Game menus
+
+    LDA cur_pal+$D          ; Do some palette finagling
+    STA cur_pal+$1          ;  Though... these palettes are never drawn, so this seems entirely pointless
+    LDA cur_pal+$F
+    STA cur_pal+$3
+    LDA #$16
+    STA cur_pal+$2
+
+    LDX #$3F                ; Initialize the ptygen buffer!
+    : LDA lut_PtyGenBuf, X  ;  all $40 bytes!  ($10 bytes per character)
+      STA ptygen, X
+      DEX
+      BPL :-
+
+  @Char_0:                      ; To Character generation for each of the 4 characters
+    LDA #$00                    ;   branching back to the previous char if the user
+    STA char_index              ;   cancelled by pressing B
+    JSR DoPartyGen_OnCharacter
+    BCS @Char_0
+  @Char_1:
+    LDA #$10
+    STA char_index
+    JSR DoPartyGen_OnCharacter
+    BCS @Char_0
+  @Char_2:
+    LDA #$20
+    STA char_index
+    JSR DoPartyGen_OnCharacter
+    BCS @Char_1
+  @Char_3:
+    LDA #$30
+    STA char_index
+    JSR DoPartyGen_OnCharacter
+    BCS @Char_2
+
+    RTS
+
+
+DoPartyGen_OnCharacter:
+    JSR PtyGen_DrawScreen           ; Draw the Party generation screen
+
+    ; Then enter the main logic loop
+  @MainLoop:
+      JSR PtyGen_Frame              ; Do a frame and update joypad input
+      LDA joy_a
+      BNE DoNameInput               ; if A was pressed, do name input
+      LDA joy_b
+      BEQ :+
+        ; if B pressed -- just SEC and exit
+        SEC
+        RTS
+
+      ; Code reaches here if A/B were not pressed
+    : LDA joy
+      AND #$0F
+      CMP joy_prevdir
+      BEQ @MainLoop             ; if there was no change in directional input, loop to another frame
+
+      STA joy_prevdir           ; otherwise, record new directional input as prevdir
+      CMP #$00                  ; if directional input released (rather than pressed)
+      BEQ @MainLoop             ;   loop to another frame.
+
+     ; Otherwise, if any direction was pressed:
+      LDX char_index
+      CLC
+      LDA ptygen_class, X       ; Add 1 to the class ID of the current character.
+      ADC #1
+      CMP #6
+      BCC :+
+        LDA #0                  ; wrap 5->0
+    : STA ptygen_class, X
+
+      LDA #$01                  ; set menustall (drawing while PPU is on)
+      STA menustall
+      LDX char_index            ; then update the on-screen class name
+      JSR PtyGen_DrawOneText
+      JMP @MainLoop
+
+
+PtyGen_Frame:
+    JSR ClearOAM           ; wipe OAM then draw all sprites
+    JSR PtyGen_DrawChars
+    JSR PtyGen_DrawCursor
+
+    JSR WaitForVBlank_L    ; VBlank and DMA
+    LDA #>oam
+    STA $4014
+
+    LDA #BANK_THIS         ; then keep playing music
+    STA cur_bank
+    JSR CallMusicPlay
+
+    JMP PtyGen_Joy         ; and update joy data!
+
+
+PtyGen_Joy:
+    LDA joy
+    AND #$0F
+    STA tmp+7            ; put old directional buttons in tmp+7 for now
+
+    JSR UpdateJoy        ; then update joypad data
+
+    LDA joy_a            ; if either A or B pressed...
+    ORA joy_b
+    BEQ :+
+      JMP PlaySFX_MenuSel ; play the Selection SFX, and exit
+
+:   LDA joy              ; otherwise, check new directional buttons
+    AND #$0F
+    BEQ @Exit            ; if none pressed, exit
+    CMP tmp+7            ; if they match the old buttons (no new buttons pressed)
+    BEQ @Exit            ;   exit
+    JMP PlaySFX_MenuMove ; .. otherwise, play the Move sound effect
+  @Exit:
+    RTS
+
+
+PtyGen_DrawCursor:
+    LDX char_index          ; use the current index to get the cursor
+    LDA ptygen_curs_x, X    ;  coords from the ptygen buffer.
+    STA spr_x
+    LDA ptygen_curs_y, X
+    STA spr_y
+    JMP DrawCursor          ; and draw the cursor there
+
+
 PtyGen_DrawScreen:
     LDA #$08
     STA soft2000          ; set BG/Spr pattern table assignments
