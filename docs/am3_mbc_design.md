@@ -74,6 +74,15 @@ map to that 8KB slice of physical RAM.
 not currently touch ROM banking, because application code runs out of
 low RAM and has no reason to call into swappable ROM.)
 
+**Bank 0 is reserved by the X16 KERNAL** for its own scratch use -- any
+data the program writes into bank 0 at `$A000-$BFFF` is liable to be
+overwritten by KERNAL IRQ activity between frames, so bank 0 must NOT
+be used for game state. AM3's "resident bank" (the bank pinned at
+`AM3_Init` and restored after banked calls) is bank 1 by default, and
+the first switchable bank is bank 2. Adjust via `AM3_RESIDENT_BANK` /
+`AM3_FIRST_USER_BANK` in `am3_cfg.inc` if a project has different
+reservations.
+
 ## How MMC1 compares
 
 FF1 on NES used MMC1 to swap PRG chunks. Two differences worth flagging,
@@ -202,16 +211,16 @@ MEMORY {
     MAIN:    start = $0801, size = $8700, file = %O;
     BSSAREA: start = $8A00, size = $1500, type = rw;
 
-    # Bank 0 is RESERVED: AM3 pins it at AM3_Init and never hands it out.
-    # Adopters put resident banked-window data here (in FF's case the
-    # MAPDATA row cache). Switchable banks start at bank 1.
-    MAPAREA: start = $A000, size = $1000, type = rw, bank = 0;
+    # Bank 0 is KERNAL scratch -- do NOT touch. Bank 1 is AM3's resident
+    # bank: MAPDATA lives here and AM3_Init pins $00 to 1. Switchable
+    # banks start at bank 2.
+    MAPAREA: start = $A000, size = $1000, type = rw, bank = 1;
 
     # Banked RAM (switchable): one region per bank. File output is still
     # one .PRG, padded with fill bytes at the bank boundaries. A loader
     # helper reads this and uploads each bank to RAM at boot.
-    BANK01:  start = $A000, size = $2000, file = %O, fill = yes, bank = 1;
     BANK02:  start = $A000, size = $2000, file = %O, fill = yes, bank = 2;
+    BANK03:  start = $A000, size = $2000, file = %O, fill = yes, bank = 3;
     # ... up to BANKFF for a full 2MB build
 }
 
@@ -224,8 +233,8 @@ SEGMENTS {
     BSS:        load = BSSAREA,  type = bss, define = yes;
     MAPDATA:    load = MAPAREA,  type = bss, define = yes;
 
-    BANKED_01:  load = BANK01,   type = ro;
     BANKED_02:  load = BANK02,   type = ro;
+    BANKED_03:  load = BANK03,   type = ro;
     # ...
 }
 ```
@@ -279,29 +288,29 @@ Ordered so each step is independently testable.
    + `AM3_Init` stub that just stores `0` to `$00`. Wire it into the
    X16 `HAL_Init` path so every build calls it. No behaviour change.
 
-2. **Reserve bank 0 for MAPDATA.** MAPDATA already lives at `$A000-$AFFF`.
-   Annotate the `MAPAREA` region in `cfg/x16.cfg` with `bank = 0` so the
-   cfg is self-documenting, and ensure `AM3_Init` is the only code that
-   writes `$00` until switch/restore land. Now `AM3_Init`'s "pin bank 0"
-   has real meaning: it guarantees the row cache is visible.
+2. **Pin resident bank.** `AM3_Init` writes `AM3_RESIDENT_BANK` (bank 1)
+   to `$00`. MAPDATA at `$A000-$AFFF` lives in that bank; the row cache
+   is therefore always visible between frames and the KERNAL's bank-0
+   scratch activity never touches it.
 
 3. **Primitives.** Implement the real `AM3_SwitchBank`, `AM3_RestoreBank`,
    `AM3_CallBanked`, and `AM3_CopyFromBank`. Add the saved-bank stack in
    BSS. No callers yet; unit-test via a scratch banked segment.
 
-4. **Config fragment.** Extend `cfg/x16.cfg` with a `BANK01` region and
-   `BANKED_01` segment mapped at bank 1. Bank 0 is NOT added because it
-   is reserved. Verify the build still produces working bytes for
-   resident code; the new region will be empty for now.
+4. **Config fragment.** Extend `cfg/x16.cfg` with a `BANK02` region and
+   `BANKED_02` segment mapped at bank 2 (first user bank; bank 0 is
+   KERNAL, bank 1 is the resident MAPDATA slab). Verify the build still
+   produces working bytes for resident code; the new region will be
+   empty for now.
 
 5. **First victim: party-gen portrait/name lookup table.** Move
-   `lut_ItemNamePtrTbl` into `BANKED_01`. Rewrite its one caller to go
+   `lut_ItemNamePtrTbl` into `BANKED_02`. Rewrite its one caller to go
    through `AM3_CopyFromBank` (or a tiny inline switch/restore wrapper
    since the caller is read-only). Verify party-gen still works.
 
 6. **Battle engine.** (When we get there.) Battle code is self-contained
    and called from a single entry point, so it's the canonical banked
-   feature. Lives entirely in `BANKED_02`.
+   feature. Lives entirely in `BANKED_03`.
 
 7. **Menu system, shops, etc.** Each lives in its own bank.
 

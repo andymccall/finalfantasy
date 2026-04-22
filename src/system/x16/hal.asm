@@ -33,6 +33,8 @@
 .import HAL_UploadMapTiles
 .import HAL_SetTileMode
 
+.include "mbc/am3/am3.inc"
+
 .export HAL_Init
 .export HAL_WaitVblank
 .export HAL_SetCameraPixel
@@ -109,6 +111,7 @@ basic_stub_end:
 .segment "CODE"
 
 .proc HAL_Init
+    jsr AM3_Init                        ; DIAGNOSTIC: now writes 1 not 0
     stz VERA_CTRL                       ; DCSEL=0, ADDRSEL=0
 
     ; --- 2x display scale: 320x240 effective, closer to NES 256x240 ---------

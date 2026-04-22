@@ -6,8 +6,7 @@
 ; save/restore API. See docs/am3_mbc_design.md for the full design.
 ;
 ; This is the initial scaffold: AM3_Init is real; the remaining entries
-; are stubbed until the first banked caller needs them. Stubs fail loudly
-; by design (brk) so accidental use is caught during development.
+; are absent until the first banked caller needs them.
 ; ---------------------------------------------------------------------------
 
 .include "mbc/am3/am3_cfg.inc"
@@ -17,13 +16,15 @@
 .segment "CODE"
 
 ; AM3_Init -------------------------------------------------------------------
-; Initialise AM3 runtime state. Pins the bank register to 0, which is the
-; reserved "resident data" bank -- any data segment linked into bank 0 is
-; live in $A000-$BFFF from this point on and is the default bank that
-; AM3_RestoreBank falls back to. Must be called exactly once at program
+; Initialise AM3 runtime state. Pins the bank register to AM3_RESIDENT_BANK
+; (1 on X16 -- bank 0 is reserved by the KERNAL and bank-0 MAPDATA reads
+; returned corrupt data even after writes, which broke overworld scroll).
+; The resident bank is AM3's "default" bank: resident data segments
+; (MAPDATA etc.) are linked into it, and AM3_RestoreBank returns here
+; when the save-stack is empty. Must be called exactly once at program
 ; start, before any other AM3 call.
 .proc AM3_Init
-    lda     #0
+    lda     #AM3_RESIDENT_BANK
     sta     AM3_BANK_REGISTER
     rts
 .endproc

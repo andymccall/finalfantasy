@@ -23,8 +23,14 @@ AM3_BANK_REGISTER  = $00
 ; if a caller hits the limit.
 AM3_STACK_DEPTH    = 4
 
+; Bank pinned at $A000-$BFFF between AM3_CallBanked calls. "Resident" data
+; segments (e.g. FF's MAPDATA row cache) live here and AM3_RestoreBank
+; falls back to this bank. MUST be >= 1 on X16 because bank 0 is reserved
+; by the X16 KERNAL for its own scratch use -- writing/reading bank 0
+; data races KERNAL activity and corrupts the contents mid-frame.
+AM3_RESIDENT_BANK = 1
+
 ; First bank number that AM3 is allowed to hand out to switchable callers.
-; Banks below this are "reserved" and always selected at AM3_Init time,
-; so resident data pinned at $A000-$BFFF can live there undisturbed.
-; FF reserves bank 0 for the MAPDATA row cache (see MAPAREA in x16.cfg).
-AM3_FIRST_USER_BANK = 1
+; Banks below this are treated as reserved (KERNAL bank 0, then the
+; resident bank, then any further reservations the project adds).
+AM3_FIRST_USER_BANK = 2

@@ -155,7 +155,10 @@ SHARED_SRCS = $(wildcard $(SRCDIR)/app/*.asm) \
               $(wildcard $(SRCDIR)/system/*.asm)
 
 # --- Commander X16 ---------------------------------------------------------
-X16_SRCS = $(wildcard $(SRCDIR)/system/x16/*.asm)
+# AM3 MBC is X16-only (see docs/am3_mbc_design.md); Neo has no banking
+# hardware analogue so we don't compile it for Neo at all.
+X16_SRCS = $(wildcard $(SRCDIR)/system/x16/*.asm) \
+           $(wildcard $(SRCDIR)/mbc/am3/*.asm)
 X16_OBJS = $(patsubst $(SRCDIR)/%.asm,$(BUILDDIR)/x16/%.o,$(SHARED_SRCS) $(X16_SRCS))
 X16_CFG  = $(CFGDIR)/x16.cfg
 X16_OUT  = $(BUILDDIR)/x16/FF.PRG
