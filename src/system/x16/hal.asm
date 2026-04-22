@@ -35,6 +35,7 @@
 
 .export HAL_Init
 .export HAL_WaitVblank
+.export HAL_SetCameraPixel
 
 ; --- VERA registers --------------------------------------------------------
 VERA_ADDR_L    = $9F20
@@ -50,6 +51,8 @@ VERA_L1_MAPBASE   = $9F35
 VERA_L1_TILEBASE  = $9F36
 VERA_L1_HSCROLL_L = $9F37
 VERA_L1_HSCROLL_H = $9F38
+VERA_L1_VSCROLL_L = $9F39
+VERA_L1_VSCROLL_H = $9F3A
 
 ; Layer 1 tile-mode configuration:
 ;   L1_CONFIG    = %00_01_0_0_10  = $12    (map 64x32, T256C=0, tile mode, 4bpp)
@@ -164,5 +167,32 @@ basic_stub_end:
     cli                                 ; let KERNAL catch up on keyboard / jiffy
 
     jsr HAL_FlushNametable
+    rts
+.endproc
+
+; HAL_SetCameraPixel --------------------------------------------------------
+; A = pixel-level sub-X offset (0..15), X = sub-Y offset (0..15).
+; Nudge VERA HSCROLL/VSCROLL around the HSCROLL_CENTER baseline so the
+; visible region slides smoothly within the current NT-mirror contents.
+; Cell-level camera motion is handled by the caller (via DrawFullMap when
+; a boundary is crossed); this call only handles the sub-cell pixel offset.
+;
+; Map cell is 16 NES pixels (2x2 NES tiles). One NES pixel = one VERA pixel
+; at this target's 1:1 source resolution; the 2x display scale just upsizes
+; on output. So sub-X 0..15 maps linearly onto HSCROLL_CENTER + sub_x.
+.proc HAL_SetCameraPixel
+    pha                                 ; stash sub-X
+    clc
+    adc #HSCROLL_CENTER_L
+    sta VERA_L1_HSCROLL_L
+    lda #HSCROLL_CENTER_H
+    adc #0                              ; propagate carry (sub-X max 15, never carries)
+    sta VERA_L1_HSCROLL_H
+    pla
+
+    txa
+    sta VERA_L1_VSCROLL_L
+    lda #0
+    sta VERA_L1_VSCROLL_H
     rts
 .endproc

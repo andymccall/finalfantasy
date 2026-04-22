@@ -99,6 +99,7 @@
 .import row_dirty
 .import tile_mode                       ; 0 = menu, 1 = map (see tileset.asm)
 .import neo_tile_group_lut              ; 1 KB LUT: (tile_id*4 + group) -> Neo slot
+.import ow_scroll_x                     ; low 5 bits = ntx = NT-ring offset (map mode)
 
 .export HAL_FlushNametable
 
@@ -125,6 +126,9 @@ FF1_FONT_BASE       = $80               ; nametable bytes $80..$FF map to tile i
 flush_ptr:        .res 2
 attr_ptr:         .res 2
 tile_lookup_ptr:  .res 2                ; zp base for neo_tile_group_lut access
+col_src_ptr:     .res 2                 ; NT0 or NT1 row base, re-aimed per col
+col_attr_lo:     .res 1                 ; attr ptr lo/hi, re-aimed per col's NT ring
+col_attr_hi:     .res 1
 
 .segment "BSS"
 
@@ -132,6 +136,8 @@ flush_row:       .res 1
 flush_col:       .res 1
 flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
 pal_work:        .res 2                 ; scratch used by lookup_map_tile
+flush_ntx:       .res 1                 ; (ow_scroll_x * 2) & $3F in map mode, 0 in menu mode
+col_phys:        .res 1                 ; physical NT col for current logical col
 
 .segment "CODE"
 
@@ -150,6 +156,21 @@ pal_work:        .res 2                 ; scratch used by lookup_map_tile
 @do_flush:
     stz nt_dirty
 
+    ; flush_ntx: FF1's DrawMapRowCol paints 16 metatiles (= 32 NES tiles)
+    ; starting at NES column mapdraw_ntx*2, where mapdraw_ntx = ow_scroll_x
+    ; & $1F is in metatile units. We walk the display window in NES-tile
+    ; units, so flush_ntx is the starting NES-tile column:
+    ; (ow_scroll_x * 2) & $3F. Bit 5 of (flush_ntx + Y) selects the
+    ; NT ring; low 5 bits give the physical column 0..31 within.
+    ; Menu mode forces 0 so NT1 is never read.
+    stz flush_ntx
+    lda tile_mode
+    beq :+
+      lda ow_scroll_x
+      asl                               ; metatile col -> NES col
+      and #$3F                          ; mod 64 (2 NTs worth of cols)
+      sta flush_ntx
+:
     stz flush_row
 @row_loop:
     ; --- per-row dirty gate ------------------------------------------------
@@ -295,7 +316,42 @@ pal_work:        .res 2                 ; scratch used by lookup_map_tile
     stz flush_col
     ldy #0
 @col_loop:
-    lda (flush_ptr), y
+    ; Compute phys = (ntx + Y) & $1F, NT-ring = bit 5 of (ntx + Y).
+    ; NT0 reads at flush_ptr; NT1 at flush_ptr + $400 (high byte + 4).
+    ; Menu mode forces flush_ntx = 0 so NT1 is never selected.
+    tya
+    clc
+    adc flush_ntx
+    tax
+    and #$1F
+    sta col_phys
+    txa
+    and #$20
+    beq @col_nt0
+    lda flush_ptr + 1
+    clc
+    adc #$04
+    sta col_src_ptr + 1
+    lda attr_ptr + 1
+    clc
+    adc #$04
+    sta col_attr_hi
+    bra @col_src_ready
+@col_nt0:
+    lda flush_ptr + 1
+    sta col_src_ptr + 1
+    lda attr_ptr + 1
+    sta col_attr_hi
+@col_src_ready:
+    lda flush_ptr + 0
+    sta col_src_ptr + 0
+    lda attr_ptr + 0
+    sta col_attr_lo
+
+    phy
+    ldy col_phys
+    lda (col_src_ptr), y
+    ply
 
     ; --- tile-mode dispatch ------------------------------------------------
     ; Menu mode (0): NES $80..$FF -> tile id byte-$80, $00..$7F -> blank.
@@ -416,23 +472,23 @@ pal_work:        .res 2                 ; scratch used by lookup_map_tile
 
 ; ---------------------------------------------------------------------------
 ; decode_cell_group: return the NES attribute group (0..3) for the cell at
-; (flush_row, flush_col). Preserves X, Y and the caller's stacked tile id.
-; Reads attr_ptr (already set up for this row), flush_col, flush_row_shift.
+; (flush_row, col_phys). Preserves X, Y and the caller's stacked tile id.
+; Reads col_attr_lo/hi (set per-col in @col_loop), col_phys, flush_row_shift.
 ; Returns: A = group 0..3.
 ; ---------------------------------------------------------------------------
 .proc decode_cell_group
     phy                                 ; save caller's Y
     phx                                 ; save caller's X
 
-    lda flush_col
+    lda col_phys
     lsr
-    lsr                                 ; col >> 2 (0..7)
+    lsr                                 ; phys_col >> 2 (0..7)
     tay
-    lda (attr_ptr), y                   ; attr byte
+    lda (col_attr_lo), y                ; attr byte
 
-    ; shift = flush_row_shift | (col & 2)
+    ; shift = flush_row_shift | (phys_col & 2)
     pha                                 ; save attr byte
-    lda flush_col
+    lda col_phys
     and #$02
     ora flush_row_shift
     tax                                 ; X = 0/2/4/6

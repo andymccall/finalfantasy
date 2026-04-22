@@ -71,8 +71,15 @@ BANK_MENUS = $00
 ; stay visually inert instead of drawing whatever the next RODATA byte is.
 ;
 ; lut_ItemNamePtrTbl is indexed by item_id * 2 (8-bit item IDs). Item IDs
-; $F0..$F5 are the six class names (used by PtyGen_DrawOneText), so we
-; populate those six pointer slots and leave the rest zero.
+; $F0..$F5 are the six class names (used by PtyGen_DrawOneText); no other
+; entries are referenced by the current port, so we only emit the six
+; real pointers and synthesise the base symbol as a negative offset from
+; them. Reads at item_id * 2 for id in $F0..$F5 land correctly; reads
+; outside that range would land on unrelated RODATA, which is fine as
+; long as no caller asks -- and today no caller does.
+;
+; See docs/am3_mbc_design.md: when AM3 lands this table will move into
+; a BANKED_00 segment and this "negative-offset base" hack goes away.
 lut_DTE1:
     .byte $A8,$FF,$B7,$AB, $B6,$AC,$FF,$B7, $A4,$B5,$FF,$A8, $B2,$A7,$B7,$B1
     .byte $B1,$A8,$A8,$FF, $B2,$A4,$AC,$FF, $B9,$FF,$B0,$B2, $FF,$B6,$FF,$A4
@@ -89,15 +96,15 @@ lut_DTE2:
     .byte $A8,$B7,$AC,$A4, $A6,$AF,$A8,$AF, $A8,$B6,$FF,$AF, $A8,$A7,$AC,$C3
     .res  $60 - 80, $FF
 
-lut_ItemNamePtrTbl:
-    .res $F0 * 2                            ; entries $00..$EF unused -- all zero
+class_name_ptrs:
     .word name_fighter                      ; $F0 Fighter
     .word name_thief                        ; $F1 Thief
     .word name_blackbelt                    ; $F2 Black Belt
     .word name_redmage                      ; $F3 Red Mage
     .word name_whitemage                    ; $F4 White Mage
     .word name_blackmage                    ; $F5 Black Mage
-    .res ($200 - ($F0 + 6) * 2)             ; entries $F6..$FF unused
+
+lut_ItemNamePtrTbl := class_name_ptrs - $F0 * 2
 
 ; Tile encoding: digits '0'..'9' at $80..$89, letters 'A'..'Z' at $8A..$A3,
 ; space at $FF, null terminator at $00. Font tiles are styled small-caps

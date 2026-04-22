@@ -23,6 +23,7 @@
 
 .export HAL_Init
 .export HAL_WaitVblank
+.export HAL_SetCameraPixel
 
 ; --- Neo6502 API -----------------------------------------------------------
 ControlPort          = $FF00
@@ -117,5 +118,13 @@ last_frame_count: .res 4
     sta last_frame_count + 3
 
     jsr HAL_FlushNametable
+    rts
+.endproc
+
+; HAL_SetCameraPixel --------------------------------------------------------
+; A = sub-X pixel offset, X = sub-Y. No-op on Neo: the OW loop uses a
+; screen-flip camera (full repaint at cell-step boundaries, no pixel-level
+; scroll), so there's no sub-cell state to track.
+.proc HAL_SetCameraPixel
     rts
 .endproc

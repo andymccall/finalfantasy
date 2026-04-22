@@ -11,6 +11,13 @@
 ; lands in the blank gutter rather than wrapping around to the other
 ; edge of the visible image.
 ;
+; OW scroll / NT straddle: FF1's DrawMapRowCol paints a 32-cell row into
+; a 2-NT ring starting at NT0 col (ow_scroll_x & $1F) = ntx. When
+; ntx != 0 the row wraps into NT1. For map mode we therefore flush the
+; logical viewport in *display order*, pulling each col from NT0 or NT1
+; per `(ntx + logical_col) & $1F` / bit 5. Menu mode keeps the plain
+; NT0-only path (title/intro/party-gen never scroll).
+;
 ; VERA 4bpp tile-map entry (2 bytes per cell):
 ;   byte 0 : tile index (7:0)
 ;   byte 1 : palette_offset(3:0) | V-flip(1) | H-flip(1) | tile_idx(9:8)
@@ -46,6 +53,7 @@
 
 .import ppu_nt_mirror
 .import tile_mode                       ; 0 = menu, 1 = map (see tileset.asm)
+.import ow_scroll_x                     ; low 5 bits = ntx = NT-ring offset for OW
 
 .export HAL_FlushNametable
 
@@ -62,17 +70,38 @@ ATTR_OFFSET    = $3C0                   ; attribute table offset within NT0
 
 .segment "ZEROPAGE"
 
-flush_ptr: .res 2
-attr_ptr:  .res 2
+flush_ptr:    .res 2
+attr_ptr:     .res 2
+col_src_ptr:  .res 2                    ; NT0 or NT1 row base, re-aimed per col
+col_attr_lo:  .res 1                    ; attr ptr lo/hi for this col's NT ring
+col_attr_hi:  .res 1
 
 .segment "BSS"
 
 flush_row:       .res 1
 flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
+flush_ntx:       .res 1                 ; (ow_scroll_x * 2) & $3F in map mode, 0 in menu mode
+col_phys:        .res 1                 ; physical NT col for this logical col
 
 .segment "CODE"
 
 .proc HAL_FlushNametable
+    ; flush_ntx: in map mode, FF1's DrawMapRowCol paints 16 metatiles
+    ; (= 32 NES tiles) starting at NES column mapdraw_ntx*2, where
+    ; mapdraw_ntx = ow_scroll_x & $1F is in metatile units. We walk the
+    ; 32-col display window in NES-tile units, so flush_ntx is that
+    ; starting NES-tile column: (ow_scroll_x * 2) & $3F. Bit 5 of
+    ; (flush_ntx + Y) then correctly selects the NT ring (NT0/NT1),
+    ; and the low 5 bits give the physical column 0..31 within.
+    ; Menu mode forces 0 so plain NT0 writes render at col 0.
+    stz flush_ntx
+    lda tile_mode
+    beq :+
+      lda ow_scroll_x
+      asl                               ; metatile col -> NES col (x2)
+      and #$3F                          ; mod 64 = 2 NTs worth of cols
+      sta flush_ntx
+:
     stz flush_row
 @row_loop:
     ; --- point VERA at ($1:B000 + row*$80 + MAP_COL_OFFSET) ----------------
@@ -138,51 +167,76 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
     sta flush_row_shift
 
     ; --- write 32 (tile_id, attr) pairs for this row ------------------------
+    ; Y holds the logical viewport col 0..31. phys = (ntx + Y) & $1F,
+    ; NT-ring bit = bit 5 of (ntx + Y). Set col_src_ptr/col_attr for NT0 at
+    ; row start; when the NT1 transition column is reached we rebase to
+    ; flush_ptr+$400. ntx is constant across a row so at most one transition
+    ; happens per row, and never at all in menu mode (flush_ntx=0).
+    lda flush_ptr + 0
+    sta col_src_ptr + 0
+    lda flush_ptr + 1
+    sta col_src_ptr + 1
+    lda attr_ptr + 0
+    sta col_attr_lo
+    lda attr_ptr + 1
+    sta col_attr_hi
     ldy #0
 @col_loop:
+    tya
+    clc
+    adc flush_ntx                       ; A = ntx + Y
+    cmp #$20
+    bne @skip_rebase
+      pha
+      lda col_src_ptr + 1
+      clc
+      adc #$04
+      sta col_src_ptr + 1
+      lda col_attr_hi
+      clc
+      adc #$04
+      sta col_attr_hi
+      pla
+@skip_rebase:
+    and #$1F
+    sta col_phys                        ; physical col 0..31
+
     ; --- byte 0: tile id from mirror, remapped by tile_mode -----------------
-    ; Menu mode: NES $00..$7F -> blank (VERA slot 0 holds the zero tile, but
-    ;   slots $01..$7F now carry map-tile CHR since HAL_UploadMapTiles ran
-    ;   at boot; we must force the id to 0 so menu screens show a clean
-    ;   background rather than map terrain).
-    ; Map mode: NES $00..$7F pass through as VERA slot = byte; $80..$FF
-    ;   unused on maps, force to blank.
-    lda (flush_ptr), y
+    phy
+    ldy col_phys
+    lda (col_src_ptr), y
+    ply
     pha
     lda tile_mode
     bne @mode_map
     pla
     cmp #$80
-    bcs @store_tile                     ; $80..$FF: pass through (font)
-    lda #0                              ; $00..$7F: blank
+    bcs @store_tile                     ; $00..$7F -> blank; $80..$FF pass through (font)
+    lda #0
     bra @store_tile
-
 @mode_map:
     pla
     cmp #$80
-    bcc @store_tile                     ; $00..$7F: pass through (map tile)
-    lda #0                              ; $80..$FF: unused on maps, blank
-
+    bcc @store_tile                     ; $00..$7F pass through (map tile); $80..$FF -> blank
+    lda #0
 @store_tile:
     sta VERA_DATA0
 
     ; --- byte 1: palette_offset << 4 ---------------------------------------
-    ; Fetch the attribute byte covering this cell. attr_col = col >> 2.
-    phy                                 ; save NT column index
-    tya
+    phy
+    lda col_phys
     lsr
-    lsr                                 ; col >> 2 (0..7)
+    lsr                                 ; phys_col >> 2 (0..7)
     tay
-    lda (attr_ptr), y
-    ply                                 ; restore NT column index
+    lda (col_attr_lo), y
+    ply
 
-    ; Shift right by flush_row_shift + (col & 2) -> 0, 2, 4, or 6.
-    pha                                 ; save attr byte
-    tya
+    pha
+    lda col_phys
     and #$02
     ora flush_row_shift
-    tax                                 ; X = shift count
-    pla                                 ; attr byte back in A
+    tax                                 ; shift count: 0/2/4/6
+    pla
 @shift_loop:
     cpx #0
     beq @shift_done
@@ -192,16 +246,18 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
     dex
     bra @shift_loop
 @shift_done:
-    and #$03                            ; group 0..3
+    and #$03
     asl
     asl
     asl
-    asl                                 ; group << 4 (palette offset field)
+    asl
     sta VERA_DATA0
 
     iny
     cpy #NT_COLS
-    bne @col_loop
+    beq @row_done
+    jmp @col_loop
+@row_done:
 
     inc flush_row
     lda flush_row

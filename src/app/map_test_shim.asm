@@ -6,18 +6,20 @@
 ; and palette, then calls DrawFullMap which paints the visible 16x15
 ; metatile window onto the host nametable.
 ;
-; Per-frame loop:
-;   - poll joypad;
-;   - on a fresh directional press, set `facing` and step the camera by
-;     one metatile cell (player stays centred), then repaint the whole
-;     viewport via DrawFullMap. No tile collision yet -- every cell is
-;     walkable. No smooth scroll on either target yet either;
-;   - advance move_ctr_x (drives the mapman walk-cycle pic toggle);
-;   - ClearOAM / DrawPlayerMapmanSprite / STA $4014 to push the sprite.
+; M2 camera model:
+;   X16: player stays centred; camera scrolls smoothly (1 NES pixel per
+;        frame) via VERA HSCROLL/VSCROLL (see HAL_SetCameraPixel). When
+;        the sub-pixel offset wraps past a cell boundary, ow_scroll_x/y
+;        advances by 1 NES tile and we repaint the full viewport.
+;   Neo: screen-flip equivalent; no sub-pixel scroll. Cell-step cadence
+;        gated by MOVE_PERIOD frames so walking doesn't blur on frame.
+;        The straddle-aware ppu_flush now renders NT0/NT1 correctly,
+;        so we step ow_scroll_x by 1 (not 32 as in M1) per cell.
 ;
 ; Milestone scope:
-;   M1 (this shim)      : joypad -> cell movement + full-viewport repaint.
-;   M2 (camera)         : X16 smooth scroll; Neo screen-flip navigation.
+;   M1 (prior)          : joypad -> cell movement + full-viewport repaint,
+;                         horizontal locked to 32-cell hops.
+;   M2 (this shim)      : X16 sub-pixel smooth scroll; Neo 1-cell steps.
 ;   M3 (collision)      : read OW tileset terrain bits, block walls/water.
 ; ---------------------------------------------------------------------------
 
@@ -25,6 +27,7 @@
 .import HAL_LoadTileset
 .import HAL_SetTileMode
 .import HAL_APU_4014_Write
+.import HAL_SetCameraPixel
 
 .import cur_pal
 .import DrawPalette
@@ -61,14 +64,22 @@ JOY_D = $04
 JOY_U = $08
 JOY_DIR_MASK = JOY_R | JOY_L | JOY_D | JOY_U
 
-; Movement cadence. One cell step per MOVE_PERIOD frames while a
-; direction is held. Also the minimum gap between step repaints so
-; DrawFullMap isn't called every vblank.
-MOVE_PERIOD = 8
+; Movement model: advance sub_px by 1 per held-direction frame. When
+; sub_px wraps past 16 (= 1 NES tile = half a metatile), commit a cell
+; step (ow_scroll_* += 1) and repaint via DrawFullMap. That gives
+; 16 frames per NES-tile = 32 frames per metatile at the native 60 Hz,
+; a reasonable walking pace that also matches FF1's move_speed=1.
+;
+; X16 uses sub_px to drive VERA HSCROLL/VSCROLL for in-cell smoothness;
+; Neo's HAL_SetCameraPixel is a no-op, so Neo players see a cell-step
+; every 16 frames (~4 cells/sec horizontal, same vertical).
+CELL_PIXELS = 16
 
 .segment "BSS"
 
-held_dir: .res 1                            ; cached HAL_PollJoy direction bits
+held_dir:  .res 1                           ; cached HAL_PollJoy direction bits
+sub_px_x:  .res 1                           ; 0..15 sub-cell X offset
+sub_px_y:  .res 1                           ; 0..15 sub-cell Y offset
 
 .segment "CODE"
 
@@ -123,6 +134,8 @@ EnterMapTest:
     stz move_ctr_y
     stz framecounter
     stz framecounter + 1
+    stz sub_px_x
+    stz sub_px_y
 
 @frame:
     jsr HAL_WaitVblank
@@ -133,74 +146,77 @@ EnterMapTest:
 :
     inc move_ctr_x                          ; walk-cycle animator
 
-    ; Only consider stepping on MOVE_PERIOD boundaries. This gates both
-    ; the frequency of DrawFullMap repaints and the player's OW speed.
-    lda framecounter
-    and #(MOVE_PERIOD - 1)
-    bne @draw
-
-    ; Read raw controller state. We deliberately skip UpdateJoy's
-    ; edge-detection (ProcessJoyButtons clobbers `joy` so held
-    ; directional bits only appear on the press edge), because we want
-    ; held-to-walk auto-repeat gated by MOVE_PERIOD. The NES achieves
-    ; held movement via the StartMapMove state machine re-triggering
-    ; joy_ignore; we mimic it with a simple cadence gate instead.
+    ; --- poll raw controller (HAL_PollJoy, not UpdateJoy: the NES engine's
+    ; edge-detection clobbers `joy` on held directions).
     jsr HAL_PollJoy
     and #JOY_DIR_MASK
-    beq @draw                               ; no direction held
-    sta held_dir                            ; cache dir bits for step branches
+    sta held_dir                            ; 0 if no direction held
 
-    ; Priority: horizontal wins if both axes are pressed. Each branch
-    ; sets `facing` to a single bit (matching FF1's facing encoding)
-    ; and steps ow_scroll_x/y.
-    ;
-    ; Horizontal stepping constraint: FF1's DrawMapRowCol paints a 32-
-    ; NES-tile-wide row into a 2-nametable ring, starting at NT column
-    ; (ow_scroll_x & $1F). When that start column != 0, the row straddles
-    ; NT0 + NT1. Our ppu_flush only reads NT0, so straddled rows render
-    ; with stale cells (X16: black, Neo: repeated tile 0). Until M2 adds
-    ; proper dual-NT flush handling, we keep ow_scroll_x aligned to
-    ; 32-cell boundaries so every paint lands wholly in NT0. That means
-    ; horizontal movement is 32-cell hops -- coarse but functional for
-    ; exercising collision + encounters. Vertical is 1 cell per step
-    ; (rows don't straddle vertically).
+    ; --- horizontal axis --------------------------------------------------
+    ; Priority: horizontal wins if both axes are pressed. Each branch sets
+    ; `facing` to a single bit (matching FF1's facing encoding) and advances
+    ; sub_px_x by 1. When sub_px_x wraps past $10 (= one NES tile), commit
+    ; a cell step (ow_scroll_x +/- 1) and repaint via a shared tail.
     lda held_dir
     and #JOY_R
-    beq :+
+    beq @chk_left
       lda #JOY_R
       sta facing
-      lda ow_scroll_x
-      clc
-      adc #$20
-      sta ow_scroll_x
-      bra @repaint
-:   lda held_dir
+      inc sub_px_x
+      lda sub_px_x
+      cmp #CELL_PIXELS
+      bcc @h_done
+        stz sub_px_x
+        inc ow_scroll_x
+        bra @repaint_h
+@chk_left:
+    lda held_dir
     and #JOY_L
-    beq :+
+    beq @h_done
       lda #JOY_L
       sta facing
-      lda ow_scroll_x
-      sec
-      sbc #$20
-      sta ow_scroll_x
-      bra @repaint
-:   lda held_dir
+      dec sub_px_x
+      bpl @h_done                           ; wrapped to $FF if N set
+        lda #CELL_PIXELS - 1
+        sta sub_px_x
+        dec ow_scroll_x
+@repaint_h:
+    jsr repaint_viewport
+@h_done:
+
+    ; --- vertical axis ----------------------------------------------------
+    lda held_dir
     and #JOY_D
-    beq :+
+    beq @chk_up
       lda #JOY_D
       sta facing
-      inc ow_scroll_y
-      bra @repaint
-:   lda #JOY_U                              ; only Up left
-    sta facing
-    dec ow_scroll_y
+      inc sub_px_y
+      lda sub_px_y
+      cmp #CELL_PIXELS
+      bcc @v_done
+        stz sub_px_y
+        inc ow_scroll_y
+        bra @repaint_v
+@chk_up:
+    lda held_dir
+    and #JOY_U
+    beq @v_done
+      lda #JOY_U
+      sta facing
+      dec sub_px_y
+      bpl @v_done                           ; wrapped to $FF if N set
+        lda #CELL_PIXELS - 1
+        sta sub_px_y
+        dec ow_scroll_y
+@repaint_v:
+    jsr repaint_viewport
+@v_done:
 
-@repaint:
-    ; Wipe the NT mirror before repainting so any cells not touched by
-    ; DrawFullMap (e.g. attribute-table padding, future partial-paint
-    ; strategies) render as blank instead of retaining stale data.
-    jsr ClearNT
-    jsr DrawFullMap
+    ; --- push sub-pixel camera offset to HAL (X16 writes HSCROLL/VSCROLL;
+    ; Neo is a no-op) --------------------------------------------------------
+    lda sub_px_x
+    ldx sub_px_y
+    jsr HAL_SetCameraPixel
 
 @draw:
     jsr ClearOAM
@@ -211,4 +227,13 @@ EnterMapTest:
     lda #$02
     jsr HAL_APU_4014_Write
 
-    bra @frame
+    jmp @frame
+
+; repaint_viewport ----------------------------------------------------------
+; After a cell-step updates ow_scroll_x/y, wipe the NT mirror (so Neo's
+; per-row dirty gate actually repaints) and re-run DrawFullMap to paint
+; the 16x15 window at the new origin.
+repaint_viewport:
+    jsr ClearNT
+    jsr DrawFullMap
+    rts
