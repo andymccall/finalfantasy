@@ -4,21 +4,21 @@
 ; After party-gen returns, EnterMapTest sets up the OW camera state
 ; (ow_scroll_x / ow_scroll_y / mapflags / facing), swaps in the OW tileset
 ; and palette, then calls DrawFullMap which paints the visible 16x15
-; metatile window onto the host nametable via StartMapMove -> PrepRowCol
-; -> DrawMapRowCol -> PrepAttributePos -> DrawMapAttributes -> ScrollUpOneRow.
+; metatile window onto the host nametable.
 ;
-; Once the map is painted we enter a per-frame loop that:
-;   - increments framecounter (drives animation on vehicles that need it);
-;   - advances move_ctr_x so the walk-cycle LSB toggles every few frames;
-;   - rotates `facing` so all four directions are exercised in turn;
-;   - ClearOAM / DrawPlayerMapmanSprite / STA $4014 each vblank to push
-;     the OAM buffer through HAL_OAMFlush -> VERA sprite attribute RAM.
+; Per-frame loop:
+;   - poll joypad;
+;   - on a fresh directional press, set `facing` and step the camera by
+;     one metatile cell (player stays centred), then repaint the whole
+;     viewport via DrawFullMap. No tile collision yet -- every cell is
+;     walkable. No smooth scroll on either target yet either;
+;   - advance move_ctr_x (drives the mapman walk-cycle pic toggle);
+;   - ClearOAM / DrawPlayerMapmanSprite / STA $4014 to push the sprite.
 ;
-; The palette copy runs AFTER DrawFullMap so the palette swap lands on
-; the same flush as the freshly-painted NT, avoiding the one-frame
-; orange-text-on-green flash we saw on both platforms. We copy all 32
-; slots (BG + sprite halves of load_map_pal) so sprite palette 0/1 end
-; up initialised before the first mapman draw.
+; Milestone scope:
+;   M1 (this shim)      : joypad -> cell movement + full-viewport repaint.
+;   M2 (camera)         : X16 smooth scroll; Neo screen-flip navigation.
+;   M3 (collision)      : read OW tileset terrain bits, block walls/water.
 ; ---------------------------------------------------------------------------
 
 .import HAL_WaitVblank
@@ -36,6 +36,7 @@
 .import DrawFullMap
 .import DrawPlayerMapmanSprite
 .import ClearOAM
+.import HAL_PollJoy
 
 .import mapflags, mapdraw_job, facing, move_speed, vehicle, cur_map
 .import ow_scroll_x, ow_scroll_y
@@ -52,10 +53,22 @@
 MAP_START_ROW = 150
 MAP_START_COL = 128
 
-; Direction-rotation period, in frames. Every FACING_PERIOD frames we
-; shift `facing` to the next direction (R -> L -> D -> U -> ...) so the
-; walk cycle is visible in every direction without needing joypad input.
-FACING_PERIOD = 64
+; NES joypad direction bits (NES layout produced by HAL_PollJoy):
+;   $01 Right  $02 Left  $04 Down  $08 Up
+JOY_R = $01
+JOY_L = $02
+JOY_D = $04
+JOY_U = $08
+JOY_DIR_MASK = JOY_R | JOY_L | JOY_D | JOY_U
+
+; Movement cadence. One cell step per MOVE_PERIOD frames while a
+; direction is held. Also the minimum gap between step repaints so
+; DrawFullMap isn't called every vblank.
+MOVE_PERIOD = 8
+
+.segment "BSS"
+
+held_dir: .res 1                            ; cached HAL_PollJoy direction bits
 
 .segment "CODE"
 
@@ -114,40 +127,88 @@ EnterMapTest:
 @frame:
     jsr HAL_WaitVblank
 
-    ; Advance animation + facing rotation.
     inc framecounter
     bne :+
     inc framecounter + 1
 :
-    ; move_ctr_x ticks +1 per frame. DrawPlayerMapmanSprite tests bit 3,
-    ; so toggling the LSB every frame isn't enough -- but a monotonically
-    ; incrementing counter means bit 3 flips every 8 frames, which is
-    ; exactly the NES walk-cycle cadence when `move_speed` is 1.
-    inc move_ctr_x
+    inc move_ctr_x                          ; walk-cycle animator
 
-    ; Rotate `facing` once every FACING_PERIOD frames. facing bits:
-    ; 1=R, 2=L, 4=D, 8=U -- so the rotation sequence we want is
-    ; $01, $02, $04, $08 (R, L, D, U), looping.
+    ; Only consider stepping on MOVE_PERIOD boundaries. This gates both
+    ; the frequency of DrawFullMap repaints and the player's OW speed.
     lda framecounter
-    and #(FACING_PERIOD - 1)                ; mod FACING_PERIOD (must be POT)
+    and #(MOVE_PERIOD - 1)
     bne @draw
-    ; At each boundary, cycle facing through 1,2,4,8.
-    lda facing
-    asl
-    cmp #$10
-    bne :+
-    lda #$01
-:
+
+    ; Read raw controller state. We deliberately skip UpdateJoy's
+    ; edge-detection (ProcessJoyButtons clobbers `joy` so held
+    ; directional bits only appear on the press edge), because we want
+    ; held-to-walk auto-repeat gated by MOVE_PERIOD. The NES achieves
+    ; held movement via the StartMapMove state machine re-triggering
+    ; joy_ignore; we mimic it with a simple cadence gate instead.
+    jsr HAL_PollJoy
+    and #JOY_DIR_MASK
+    beq @draw                               ; no direction held
+    sta held_dir                            ; cache dir bits for step branches
+
+    ; Priority: horizontal wins if both axes are pressed. Each branch
+    ; sets `facing` to a single bit (matching FF1's facing encoding)
+    ; and steps ow_scroll_x/y.
+    ;
+    ; Horizontal stepping constraint: FF1's DrawMapRowCol paints a 32-
+    ; NES-tile-wide row into a 2-nametable ring, starting at NT column
+    ; (ow_scroll_x & $1F). When that start column != 0, the row straddles
+    ; NT0 + NT1. Our ppu_flush only reads NT0, so straddled rows render
+    ; with stale cells (X16: black, Neo: repeated tile 0). Until M2 adds
+    ; proper dual-NT flush handling, we keep ow_scroll_x aligned to
+    ; 32-cell boundaries so every paint lands wholly in NT0. That means
+    ; horizontal movement is 32-cell hops -- coarse but functional for
+    ; exercising collision + encounters. Vertical is 1 cell per step
+    ; (rows don't straddle vertically).
+    lda held_dir
+    and #JOY_R
+    beq :+
+      lda #JOY_R
+      sta facing
+      lda ow_scroll_x
+      clc
+      adc #$20
+      sta ow_scroll_x
+      bra @repaint
+:   lda held_dir
+    and #JOY_L
+    beq :+
+      lda #JOY_L
+      sta facing
+      lda ow_scroll_x
+      sec
+      sbc #$20
+      sta ow_scroll_x
+      bra @repaint
+:   lda held_dir
+    and #JOY_D
+    beq :+
+      lda #JOY_D
+      sta facing
+      inc ow_scroll_y
+      bra @repaint
+:   lda #JOY_U                              ; only Up left
     sta facing
+    dec ow_scroll_y
+
+@repaint:
+    ; Wipe the NT mirror before repainting so any cells not touched by
+    ; DrawFullMap (e.g. attribute-table padding, future partial-paint
+    ; strategies) render as blank instead of retaining stale data.
+    jsr ClearNT
+    jsr DrawFullMap
 
 @draw:
     jsr ClearOAM
-    lda vehicle                             ; Y = current vehicle (for Draw2x2Vehicle path)
+    lda vehicle
     tay
     jsr DrawPlayerMapmanSprite
 
-    ; Trigger the OAMDMA hook -> HAL_OAMFlush.
-    lda #$02                                ; any value; $4014 hook doesn't read it on host
+    lda #$02
     jsr HAL_APU_4014_Write
 
     bra @frame

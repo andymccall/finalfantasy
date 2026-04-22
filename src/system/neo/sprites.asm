@@ -328,6 +328,16 @@ class_idx:    .res 1
 ; emit_class: A = class index (0..11), Y = party slot (0..3),
 ; X = OAM record index of the UL of the 6-slot class block.
 ; Emits two Sprite Set calls (top, bot).
+;
+; Neo firmware quirk: SPRHide sets isVisible=false, and SPRUpdate only
+; re-sets isVisible inside its xyChanged branch. If we hide a sprite
+; (during name-entry, when class OAM is empty) then re-emit at the same
+; position (when party-gen resumes), xyChanged is false, isVisible stays
+; false, and SPRPHYDraw is never called -- the portrait stays invisible.
+; Workaround: precede each real Sprite Set with an "invalidating" write
+; at x=0 so xyChanged trips, isVisible flips true, then the real write
+; moves it to the correct spot. The x=0 intermediate state never renders
+; because both API calls complete synchronously within the same frame.
 .proc emit_class
     sta class_idx
     sty party_slot
@@ -352,22 +362,12 @@ class_idx:    .res 1
     lda oam, y
     sta ul_x
 
-    ; --- top sprite --------------------------------------------------------
-@wait1:
-    lda API_COMMAND
-    bne @wait1
-
+    ; --- top sprite: invalidating write at x=0 -----------------------------
     lda spr_num
     sta API_PARAMETERS + 0
-
-    lda ul_x
-    clc
-    adc #GUTTER_X
-    sta API_PARAMETERS + 1
     lda #0
-    adc #0
+    sta API_PARAMETERS + 1
     sta API_PARAMETERS + 2
-
     lda ul_y
     clc
     adc #1
@@ -375,35 +375,19 @@ class_idx:    .res 1
     lda #0
     adc #0
     sta API_PARAMETERS + 4
-
-    ; image idx = CLASS_IMAGE_BASE + class * 2
     lda class_idx
     asl
     clc
     adc #CLASS_IMAGE_BASE
     sta API_PARAMETERS + 5
-    stz API_PARAMETERS + 6              ; no flip
+    stz API_PARAMETERS + 6
     lda #7
-    sta API_PARAMETERS + 7              ; anchor / flags
+    sta API_PARAMETERS + 7
+    jsr neo_sprite_set_sync
 
-    lda #API_FN_SPRITE_SET
-    sta API_FUNCTION
-    lda #API_GROUP_SPRITES
-    sta API_COMMAND
-@done1:
-    lda API_COMMAND
-    bne @done1
-
-    ; --- bot sprite (same X, Y + 16, image idx + 1, slot + 1) --------------
-@wait2:
-    lda API_COMMAND
-    bne @wait2
-
+    ; --- top sprite: real position -----------------------------------------
     lda spr_num
-    clc
-    adc #1
     sta API_PARAMETERS + 0
-
     lda ul_x
     clc
     adc #GUTTER_X
@@ -411,15 +395,38 @@ class_idx:    .res 1
     lda #0
     adc #0
     sta API_PARAMETERS + 2
-
     lda ul_y
     clc
-    adc #17                             ; +1 (NES Y correction) + 16 (stack)
+    adc #1
     sta API_PARAMETERS + 3
     lda #0
     adc #0
     sta API_PARAMETERS + 4
+    lda class_idx
+    asl
+    clc
+    adc #CLASS_IMAGE_BASE
+    sta API_PARAMETERS + 5
+    stz API_PARAMETERS + 6
+    lda #7
+    sta API_PARAMETERS + 7
+    jsr neo_sprite_set_sync
 
+    ; --- bot sprite: invalidating write at x=0 -----------------------------
+    lda spr_num
+    clc
+    adc #1
+    sta API_PARAMETERS + 0
+    lda #0
+    sta API_PARAMETERS + 1
+    sta API_PARAMETERS + 2
+    lda ul_y
+    clc
+    adc #17
+    sta API_PARAMETERS + 3
+    lda #0
+    adc #0
+    sta API_PARAMETERS + 4
     lda class_idx
     asl
     clc
@@ -428,14 +435,53 @@ class_idx:    .res 1
     stz API_PARAMETERS + 6
     lda #7
     sta API_PARAMETERS + 7
+    jsr neo_sprite_set_sync
 
+    ; --- bot sprite: real position -----------------------------------------
+    lda spr_num
+    clc
+    adc #1
+    sta API_PARAMETERS + 0
+    lda ul_x
+    clc
+    adc #GUTTER_X
+    sta API_PARAMETERS + 1
+    lda #0
+    adc #0
+    sta API_PARAMETERS + 2
+    lda ul_y
+    clc
+    adc #17                             ; +1 (NES Y correction) + 16 (stack)
+    sta API_PARAMETERS + 3
+    lda #0
+    adc #0
+    sta API_PARAMETERS + 4
+    lda class_idx
+    asl
+    clc
+    adc #CLASS_IMAGE_BASE + 1
+    sta API_PARAMETERS + 5
+    stz API_PARAMETERS + 6
+    lda #7
+    sta API_PARAMETERS + 7
+    jsr neo_sprite_set_sync
+    rts
+.endproc
+
+; neo_sprite_set_sync: issue Sprite Set with params already populated,
+; wait for the firmware to finish. Shared by emit_class's invalidate/real
+; write pairs.
+.proc neo_sprite_set_sync
+@wait_idle:
+    lda API_COMMAND
+    bne @wait_idle
     lda #API_FN_SPRITE_SET
     sta API_FUNCTION
     lda #API_GROUP_SPRITES
     sta API_COMMAND
-@done2:
+@wait_done:
     lda API_COMMAND
-    bne @done2
+    bne @wait_done
     rts
 .endproc
 
