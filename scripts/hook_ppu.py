@@ -13,6 +13,7 @@ Substitutions (case-insensitive, whole-mnemonic match, comments preserved):
     STA $2005  ->  JSR HAL_PPU_2005_Write   (PPUSCROLL -- host no-op)
     STA $2006  ->  JSR HAL_PPU_2006_Write   (PPUADDR latch)
     STA $2007  ->  JSR HAL_PPU_2007_Write   (PPUDATA to nametable / palette)
+    LDA $2007  ->  JSR HAL_PPU_2007_Read    (PPUDATA read from nametable)
     STX $2006  ->  JSR HAL_PPU_2006_Write_X (X-sourced PPUADDR write)
     STY $2006  ->  JSR HAL_PPU_2006_Write_Y (Y-sourced PPUADDR write)
     STX $2007  ->  JSR HAL_PPU_2007_Write_X (X-sourced PPUDATA write)
@@ -38,6 +39,7 @@ PATTERNS = (
     (re.compile(r"\bsta\s+\$2005\b", re.IGNORECASE), "JSR HAL_PPU_2005_Write"),
     (re.compile(r"\bsta\s+\$2006\b", re.IGNORECASE), "JSR HAL_PPU_2006_Write"),
     (re.compile(r"\bsta\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Write"),
+    (re.compile(r"\blda\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Read"),
     (re.compile(r"\bstx\s+\$2006\b", re.IGNORECASE), "JSR HAL_PPU_2006_Write_X"),
     (re.compile(r"\bsty\s+\$2006\b", re.IGNORECASE), "JSR HAL_PPU_2006_Write_Y"),
     (re.compile(r"\bstx\s+\$2007\b", re.IGNORECASE), "JSR HAL_PPU_2007_Write_X"),

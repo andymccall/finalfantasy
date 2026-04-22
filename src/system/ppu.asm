@@ -49,6 +49,7 @@
 .export HAL_PPU_2007_Write
 .export HAL_PPU_2007_Write_X
 .export HAL_PPU_2007_Write_Y
+.export HAL_PPU_2007_Read
 .export ppu_nt_mirror
 .export palette_ram
 .export nt_dirty
@@ -66,6 +67,10 @@ ppu_addr_lo:    .res 1
 ppu_addr_hi:    .res 1
 ppu_addr_latch: .res 1                  ; 0 = next write is high byte
                                         ; 1 = next write is low byte
+ppu_read_buf:   .res 1                  ; NES PPU $2007 read latch
+                                        ; (value returned by the *next*
+                                        ; read, populated by the current
+                                        ; read's side effect)
 nt_dirty:       .res 1                  ; non-zero iff the mirror has been
                                         ; written since the last flush. The
                                         ; HAL flush routine clears this when
@@ -346,5 +351,53 @@ row_dirty:      .res 30                 ; per-row dirty bits for the 32x30
     tya
     jsr HAL_PPU_2007_Write
     pla
+    rts
+.endproc
+
+; $2007 (PPUDATA) read. Models the NES PPU's 1-byte read buffer:
+;
+;   1) return A = ppu_read_buf  (byte from the *previous* latched address)
+;   2) load mirror[ppu_addr] into ppu_read_buf
+;   3) increment ppu_addr
+;
+; This matches the dummy-read / real-read pattern FF1's DrawMapAttributes
+; depends on. With a straight "read current byte" model, the second read
+; would see the byte at attr_addr+1 instead of attr_addr -- the visible
+; symptom is attribute-group striping, since adjacent attr bytes then
+; scramble each other.
+;
+; Clobbers A; preserves X/Y. Palette reads aren't modelled; FF1's RMW
+; only reads from $23C0..$23FF (attribute-table region of NT0/NT1).
+.proc HAL_PPU_2007_Read
+    phx
+    phy
+    lda ppu_read_buf                    ; A = buffered byte (returned)
+    tax                                 ; stash across the refill
+
+    ; --- refill ppu_read_buf from mirror[ppu_addr] ------------------------
+    lda ppu_addr_hi
+    and #$07
+    clc
+    adc #>ppu_nt_mirror
+    sta ppu_nt_ptr + 1
+    lda ppu_addr_lo
+    clc
+    adc #<ppu_nt_mirror
+    sta ppu_nt_ptr + 0
+    bcc @load
+    inc ppu_nt_ptr + 1
+@load:
+    ldy #0
+    lda (ppu_nt_ptr), y
+    sta ppu_read_buf
+
+    ; --- increment ppu_addr ------------------------------------------------
+    inc ppu_addr_lo
+    bne @done
+    inc ppu_addr_hi
+@done:
+    txa                                 ; A = the byte we buffered last time
+    ply
+    plx
     rts
 .endproc

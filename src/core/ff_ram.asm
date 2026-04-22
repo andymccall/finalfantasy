@@ -34,6 +34,14 @@
 .export startintrocheck
 .export unk_FE, NTsoft2000
 
+.export mapflags, mapdraw_x, mapdraw_y, mapdraw_ntx, mapdraw_nty, mapdraw_job
+.export facing, move_speed, scroll_y, scroll_x
+.export ow_scroll_x, ow_scroll_y, sm_scroll_x, sm_scroll_y
+.export sm_player_x, sm_player_y, vehicle, cur_map
+.export draw_buf_ul, draw_buf_ur, draw_buf_dl, draw_buf_dr, draw_buf_attr
+.export draw_buf_at_hi, draw_buf_at_lo, draw_buf_at_msk
+.export mapdata
+
 .segment "ZEROPAGE"
 
 ; DrawComplexString reads the source string via LDA (text_ptr),Y so the
@@ -179,3 +187,48 @@ startintrocheck: .res 1
 ; into them so the slots must exist.
 unk_FE:          .res 1
 NTsoft2000:      .res 1
+
+; --- Map-draw state --------------------------------------------------------
+; mapflags layout (from FF1 bank_0F.asm map routines):
+;   bit 0: 0 = overworld, 1 = standard map
+;   bit 1: 0 = draw row, 1 = draw column
+mapflags:    .res 1
+mapdraw_x:   .res 1        ; map-space column of next tile to prep
+mapdraw_y:   .res 1        ; map-space row of next tile to prep
+mapdraw_ntx: .res 1        ; NT column target
+mapdraw_nty: .res 1        ; NT row target
+mapdraw_job: .res 1        ; 0 = idle, 1 = attrs pending, 2 = tiles pending
+facing:      .res 1        ; player facing bits (1=R, 2=L, 4=D, 8=U)
+move_speed:  .res 1        ; pixels per frame (0 = not moving)
+scroll_y:    .res 1        ; NT row of top of viewport (0..14)
+scroll_x:    .res 1        ; NT column of left of viewport (0..31)
+ow_scroll_x: .res 1        ; OW map-space camera X (0..255)
+ow_scroll_y: .res 1        ; OW map-space camera Y (0..255)
+sm_scroll_x: .res 1        ; SM camera X (0..63)
+sm_scroll_y: .res 1        ; SM camera Y (0..63)
+sm_player_x: .res 1
+sm_player_y: .res 1
+vehicle:     .res 1        ; 0/1=foot, 2=canoe, 4=ship, 8=airship
+cur_map:     .res 1        ; SM id; unused until SM path comes up
+
+; --- Tile/attr drawing buffers --------------------------------------------
+; PrepRowCol fills 16 bytes of ul/ur/dl/dr/attr; DrawMapRowCol draws 16 tiles
+; across a row or 15 down a column. PrepAttributePos fills 16 ats for rows /
+; 15 for columns. Kept to 16 each to match FF1's $0780..$07BF area.
+draw_buf_ul:     .res 16
+draw_buf_ur:     .res 16
+draw_buf_dl:     .res 16
+draw_buf_dr:     .res 16
+draw_buf_attr:   .res 16
+draw_buf_at_hi:  .res 16
+draw_buf_at_lo:  .res 16
+draw_buf_at_msk: .res 16
+
+; --- mapdata buffer (MAPDATA segment, 4 KB aligned) -----------------------
+; LoadOWMapRow writes decompressed rows into mapdata + (mapdraw_y & $0F)*256.
+; Only 16 rows are cached at a time. PrepRowCol uses (mapdraw_y & $0F) |
+; >mapdata for the source pointer high byte, so >mapdata must have its low
+; nibble zero; the linker pins the region at $7000 (x16) / $E000 (neo).
+.segment "MAPDATA"
+
+mapdata:     .res $1000
