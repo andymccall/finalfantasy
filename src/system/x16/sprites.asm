@@ -19,16 +19,32 @@
 ;
 ; VRAM layout we claim for sprite pixel data:
 ;   $13000..$1307F  cursor sprite tile data    (4 tiles * 32 bytes)
-;   $13080..$1327F  mapman sprite tile data   (16 tiles * 32 bytes)
+;   $13080..$1327F  mapman sprite tile data    (16 tiles * 32 bytes)
+;   $14000..$15800  class sprite tile data     (192 tiles * 32 bytes)
 ;
 ; The data-addr field is VRAM bits 16:5 (tile = 32 bytes). For $13000
 ; the field value is $980 (byte +0 = $80, byte +1 = $09). Each following
-; tile adds 1 to byte +0 (cursor tile N -> $80+N, mapman tile N -> $84+N).
+; tile adds 1 to byte +0. Class CHR at $14000 -> field $A00 (byte +0 =
+; $A0, byte +1 = $09) since $14000 >> 5 = $A00.
+;
+; NES sprite CHR is bank-swapped on the real NES, so the same tile ID
+; means different pixels on the party-gen screen vs the overworld. We
+; track a sprite_mode flag (0 = mapman, 1 = class) that HAL_SetSpriteMode
+; flips. The tile-ID -> data-addr dispatch branches on it.
+;
+; Cursor tiles $F0..$F3 live at $13000 regardless of sprite_mode, so
+; tile IDs >= $F0 always route to the cursor region. Class CHR spans
+; $00..$BF, so the tighter $F0 threshold lets White Mage ($80) and the
+; promoted classes (up to $160) read their CHR cleanly.
 ;
 ; NES tile ID -> VERA data addr dispatch:
-;   $00..$0F (mapman) -> addr_lo = $84 + tile
-;   $F0..$F3 (cursor) -> addr_lo = tile - $70 (= $80 + (tile-$F0))
-; Both share addr_hi = $09 (bit 7 = Mode = 0 = 4bpp).
+;   sprite_mode = mapman (0):
+;     $00..$0F (mapman) -> addr_lo = $84 + tile,  addr_hi = $09
+;   sprite_mode = class (1):
+;     $00..$BF (class)  -> addr_lo = tile,        addr_hi = $0A
+;   Either mode, tile >= $80:
+;     $F0..$F3 (cursor) -> addr_lo = tile - $70,  addr_hi = $09
+; (bit 7 of addr_hi = Mode, 0 = 4bpp.)
 ;
 ; NES OAM attr byte -> VERA byte +6 / byte +7:
 ;   attr bit 0 (palette select 0/1) -> VERA byte +7 palette offset (4 or 5)
@@ -50,6 +66,10 @@
 
 .export HAL_SpritesInit
 .export HAL_OAMFlush
+.export HAL_SetSpriteMode
+
+SPRITE_MODE_MAPMAN = 0
+SPRITE_MODE_CLASS  = 1
 
 VERA_ADDR_L = $9F20
 VERA_ADDR_M = $9F21
@@ -68,6 +88,7 @@ CURSOR_TILE_M = $30
 CURSOR_TILE_H = $11
 CURSOR_DATA_ADDR_LO_BASE = $80
 DATA_ADDR_HI             = $09          ; bit 7 = Mode = 0 = 4bpp
+CLASS_DATA_ADDR_HI       = $0A          ; VRAM $14000 -> field $A00 (high nibble $0A)
 
 ; Mapman tile data starts at VRAM $13080 -> data addr $984.
 MAPMAN_TILE_L = $80
@@ -75,9 +96,16 @@ MAPMAN_TILE_M = $30
 MAPMAN_TILE_H = $11
 MAPMAN_DATA_ADDR_LO_BASE = $84
 
-; How many NES OAM slots HAL_OAMFlush walks. 8 = cursor (0..3) + mapman
-; (4..7); bump later when we add vehicle / NPC sprites.
-OAM_SLOTS_WALKED = 8
+; Class sprite tile data starts at VRAM $14000 -> data addr $A00.
+CLASS_TILE_L = $00
+CLASS_TILE_M = $40
+CLASS_TILE_H = $11
+CLASS_DATA_ADDR_LO_BASE = $00
+
+; How many NES OAM slots HAL_OAMFlush walks. Party-gen draws 4 class
+; sprites (4 * 6 = 24 slots) plus 4 cursor slots = 28. Mapman OW frames
+; only touch 4..7 plus cursor $F0..$F3 at slots 0..3, which all fit.
+OAM_SLOTS_WALKED = 28
 
 ; KERNAL APIs used for runtime mapman-pixel load.
 ;   SETLFS: A = logical file, X = device, Y = secondary addr
@@ -93,6 +121,7 @@ LOAD   = $FFD5
 ; and cursor+mapman are our first two of many sprite assets. Runtime
 ; load is the pattern that scales.
 MAPMAN_FILENAME_LEN = 15
+CLASS_FILENAME_LEN  = 14
 
 .segment "RODATA"
 
@@ -104,6 +133,13 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
 
 mapman_filename:
     .byte "MAPMAN_VERA.BIN"
+
+class_filename:
+    .byte "CLASS_VERA.BIN"
+
+.segment "BSS"
+
+sprite_mode: .res 1                     ; 0 = mapman, 1 = class
 
 .segment "CODE"
 
@@ -145,7 +181,26 @@ mapman_filename:
     ldy #MAPMAN_TILE_M                      ; offset high ($30)
     jsr LOAD
 
-    ; --- program 8 sprite attributes, all hidden -------------------------
+    ; --- load class sprite tile pixels into VRAM $14000 --------------------
+    lda #CLASS_FILENAME_LEN
+    ldx #<class_filename
+    ldy #>class_filename
+    jsr SETNAM
+
+    lda #2                                  ; logical file
+    ldx #8                                  ; device 8
+    ldy #2                                  ; headerless
+    jsr SETLFS
+
+    lda #3                                  ; VRAM bank 1
+    ldx #CLASS_TILE_L                       ; offset low  ($00)
+    ldy #CLASS_TILE_M                       ; offset high ($40)
+    jsr LOAD
+
+    ; --- default sprite mode = mapman --------------------------------------
+    stz sprite_mode
+
+    ; --- program sprite attributes, all hidden -----------------------------
     lda #SPRITE_ATTR_L
     sta VERA_ADDR_L
     lda #SPRITE_ATTR_M
@@ -217,9 +272,20 @@ mapman_filename:
     ; --- visible: +0/+1 data addr from NES tile ID --------------------------
     iny                                 ; oam+1 = tile ID
     lda oam, y
-    cmp #$80                            ; cursor tiles are $F0..$F3 (>= $80)
+    cmp #$F0                            ; cursor tiles are $F0..$F3
     bcs @cursor_tile
-    ; mapman: $00..$0F -> addr_lo = $84 + tile
+    ; non-cursor: dispatch on sprite_mode (stash A, test, restore A)
+    pha
+    lda sprite_mode
+    beq @mapman_lo
+    ; class: $00..$BF -> addr_lo = tile, addr_hi = $0A
+    pla
+    sta VERA_DATA0                      ; attr +0 = tile (addr_lo)
+    lda #CLASS_DATA_ADDR_HI
+    sta VERA_DATA0                      ; attr +1 = mode 4bpp, addr hi = $0A
+    bra @wrote_addr
+@mapman_lo:
+    pla
     clc
     adc #MAPMAN_DATA_ADDR_LO_BASE
     bra @wrote_lo
@@ -231,6 +297,7 @@ mapman_filename:
     sta VERA_DATA0                      ; attr +0 = addr lo
     lda #DATA_ADDR_HI
     sta VERA_DATA0                      ; attr +1 = mode 4bpp, addr hi = $09
+@wrote_addr:
 
     ; --- +2/+3: X = 32 + NES X (oam+3) --------------------------------------
     iny
@@ -298,5 +365,14 @@ mapman_filename:
     beq @done
     jmp @slot
 @done:
+    rts
+.endproc
+
+; HAL_SetSpriteMode ---------------------------------------------------------
+; A = 0 -> mapman tiles (OW), A = 1 -> class tiles (party-gen / battle).
+; Flips the tile-ID -> VRAM address dispatch in HAL_OAMFlush. Cursor tiles
+; always route to their own region regardless of mode.
+.proc HAL_SetSpriteMode
+    sta sprite_mode
     rts
 .endproc

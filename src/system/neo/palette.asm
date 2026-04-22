@@ -62,6 +62,9 @@
 
 .export HAL_PalettePush
 .export HAL_PaletteInit
+.export HAL_PushBGSubpal
+.export nes_bg_shadow
+.export nes_to_rgb_lut
 
 .import tile_mode                       ; 0 = menu, 1 = map (see tileset.asm)
 
@@ -202,6 +205,11 @@ pal_idx:    .res 1                      ; loop index (tile slot or sprite row)
 pal_col:    .res 1                      ; sprite column 0..15
 pal_colour: .res 1                      ; NES colour index for push_bg_slot
 
+; NES BG palette shadow: 16 bytes tracking the last NES colour index (0..$3F)
+; written to each of $3F00..$3F0F. ppu_flush reads this to rebuild Neo slots
+; $00..$03 per cell group in map mode.
+nes_bg_shadow: .res 16
+
 .segment "CODE"
 
 ; HAL_PaletteInit -----------------------------------------------------------
@@ -319,20 +327,30 @@ pal_colour: .res 1                      ; NES colour index for push_bg_slot
 ;       bits 1:0 = colour within group)
 ;   Must preserve A, X, Y.
 ;
-; Neo tile slots $00..$0F line up with NES BG palette slots $00..$0F,
-; so BG writes forward 1:1 into their matching Neo slot. Sprite-palette
-; writes ($10..$1F) are filtered out -- sprite colours are baked at
-; build-time into fixed Neo sprite rows.
+; Shadow: nes_bg_shadow[slot] = A for BG slots $00..$0F, consumed by
+; ppu_flush to rebuild Neo slots $00..$03 when the painted cell's group
+; changes.
 ;
-; Font-mode mirror: font-mode tile images encode glyph nibbles as 0..3
-; (targeting Neo slots $00..$03). On menu screens FF1 puts text in
-; nametable regions attributed as group 3 (ClearNT fills the attribute
-; table with $FF), so the "correct" colours for those glyphs live in
-; NES BG slot $0C..$0F. We mirror group-3 writes into Neo slot $00..$03
-; whenever tile_mode = 0 (menu), so last-write-wins lands group 3's
-; menu-blue/white on the font nibbles. In map mode we skip the mirror:
-; slots $00..$0F all hold their own group's colour for the per-variant
-; tile images.
+; Neo slot forwarding rules:
+;   Map mode  (tile_mode=1): forward NES $04..$0F -> Neo $04..$0F 1:1.
+;                            Slots $00..$03 are owned by ppu_flush, it
+;                            rewrites them per cell from the shadow.
+;                            We skip forwarding NES $00..$03 so the
+;                            flush's per-cell choice isn't fought.
+;   Font mode (tile_mode=0): forward NES $0C..$0F -> Neo $00..$03 (the
+;                            group-3 mirror: menu text sits in group-3
+;                            attr regions, so colour-within-group values
+;                            render from group 3 into the flat tile
+;                            nibbles 0..3). All other BG writes drop,
+;                            but the shadow is still updated -- ppu_flush
+;                            can call HAL_PushBGSubpal to switch Neo
+;                            $00..$03 to any group's colours when a cell
+;                            with a non-group-3 attribute needs drawing
+;                            (e.g. the party-gen name-input top box,
+;                            which FF1 paints in group 0).
+;
+; Sprite-palette writes ($10..$1F) are filtered out -- sprite colours
+; are baked at build-time into fixed Neo sprite rows.
 .proc HAL_PalettePush
     phy
     phx
@@ -346,22 +364,35 @@ pal_colour: .res 1                      ; NES colour index for push_bg_slot
     jmp @done                           ; sprite-palette slot ($10+) -> ignore
 @bg_write:
 
-    ; --- primary 1:1 forward: Neo slot $0X = NES BG slot $0X ---------------
+    ; --- shadow update: nes_bg_shadow[slot & $0F] = colour ----------------
     txa
     and #$0F
-    sta pal_slot
-    jsr push_bg_slot
+    tay
+    lda pal_colour
+    sta nes_bg_shadow, y
 
-    ; --- font-mode mirror: NES $0C..$0F -> Neo $00..$03 --------------------
     lda tile_mode
-    bne @done                           ; map mode: no mirror
+    bne @map_mode
+
+    ; --- font mode: only forward NES $0C..$0F -> Neo $00..$03 -------------
     txa
     and #$0C
     cmp #$0C
-    bne @done                           ; not group 3: no mirror
-
+    bne @done                           ; not group 3: drop
     txa
-    and #$03                            ; mirror slot $00..$03
+    and #$03
+    sta pal_slot
+    jsr push_bg_slot
+    jmp @done
+
+@map_mode:
+    ; --- map mode: forward NES $04..$0F -> Neo $04..$0F; $00..$03 owned
+    ; by ppu_flush so we skip them here.
+    txa
+    and #$0C
+    beq @done                           ; group 0 ($00..$03): skip
+    txa
+    and #$0F
     sta pal_slot
     jsr push_bg_slot
 
@@ -410,3 +441,41 @@ pal_colour: .res 1                      ; NES colour index for push_bg_slot
     plx
     rts
 .endproc
+
+; HAL_PushBGSubpal ----------------------------------------------------------
+; Reprogram Neo slots $00..$03 from one of the four NES BG attribute groups
+; via push_bg_slot. Menu mode uses this to make per-cell group switching
+; possible without re-baking font tiles for each group: the font tile
+; pixel nibbles are 0..3, and Neo slots $00..$03 hold whichever group's
+; colours we last pushed. ppu_flush menu-mode calls this whenever the
+; current cell's attribute group differs from the group last programmed,
+; then restores group 3 at the end of the flush so subsequent frames
+; without any group-switch work still see the familiar menu palette.
+;   On entry : A = NES attribute group 0..3
+;   On exit  : Neo slots $00..$03 reprogrammed from
+;              nes_bg_shadow[group*4 .. group*4 + 3]
+;   Preserves : X, Y
+;   Clobbers : A, pal_slot, pal_colour
+.proc HAL_PushBGSubpal
+    phy
+    phx
+    and #$03
+    asl                                 ; group * 4 -> shadow base
+    asl
+    tay
+    ldx #0
+@loop:
+    lda nes_bg_shadow, y
+    sta pal_colour
+    txa
+    sta pal_slot                        ; target Neo slot 0..3
+    jsr push_bg_slot
+    iny
+    inx
+    cpx #4
+    bne @loop
+    plx
+    ply
+    rts
+.endproc
+

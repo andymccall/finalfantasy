@@ -49,6 +49,7 @@
 
 .export HAL_SpritesInit
 .export HAL_OAMFlush
+.export HAL_SetSpriteMode
 
 ControlPort          = $FF00
 API_COMMAND          = ControlPort + 0
@@ -84,6 +85,15 @@ mapman_drawn: .res 1
 ; Nothing else to stage here; kept as a no-op so hal.asm's explicit JSR
 ; stays valid.
 .proc HAL_SpritesInit
+    rts
+.endproc
+
+; HAL_SetSpriteMode ---------------------------------------------------------
+; No-op stub. On Neo, the cursor + mapman + class sprites share firmware
+; image slots loaded by HAL_LoadTileset, so there's no runtime mode flag
+; to flip yet. The class-CHR port will wire this up alongside the
+; firmware sprite-image upload.
+.proc HAL_SetSpriteMode
     rts
 .endproc
 

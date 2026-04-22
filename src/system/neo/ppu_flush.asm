@@ -18,26 +18,27 @@
 ;              transition where stale glyphs from the previous frame
 ;              would otherwise linger under the $00 cells.
 ;
-; Attribute-group gating: Neo runs a flat 4-colour palette so it can't
-; carry per-cell palette groups the way the NES does. To approximate
-; FF1's intro-story fade (which reveals text row-by-row by flipping
-; attribute metatiles from group 1 -> group 2 -> group 3), we gate tile
-; drawing on the cell's current attribute group: group 3 draws, groups
-; 0/1/2 skip (fall through to the black pre-clear). Group 2 is the
-; "currently animating" row and we DO want to see it mid-fade, so we
-; treat it as drawable too; the foreground colour is driven by
-; HAL_PalettePush hooking writes to NES $3F0B, giving us the grey-to-
-; white cycle. Groups 0 and 1 stay hidden. When FF1 eventually locks
-; the block to %11111111 (all group 3), the row renders at its final
-; colour and stays there.
+; Attribute-group handling:
 ;
-; Exception: NES tile $FF is the "blue fill" background tile (every
-; pixel = nibble 2 = blue). On the NES it sits under the fading text
-; and is always visible (its colour index 2 is the same blue in every
-; palette group, so the attribute group doesn't change what it looks
-; like). We carve out a fast-path before the attr-group gate so tile
-; $FF always draws -- without it the whole screen stays black until
-; the text fade, instead of showing the blue curtain from the start.
+;   Menu mode (tile_mode=0): the font-mode mirror in HAL_PalettePush
+;   lands group 3's colours in Neo slots $00..$03, so tiles encoded
+;   with nibbles 0..3 render with the menu palette. The attr-group
+;   gate here routes group 1 (intro "faded-out" rows) to the blue-fill
+;   tile so the hidden-text curtain reads blue rather than black, and
+;   lets group 0/2/3 draw normally.
+;
+;   Map mode (tile_mode=1): Neo slots $00..$0F are programmed at boot
+;   with 4 attribute-group palettes laid out contiguously (see
+;   palette.asm tile_palette_rgb). Each map tile was baked for a
+;   specific group, with its pixel nibbles pointing into that group's
+;   4-slot range (group 0 -> $00..$03, group 1 -> $04..$07, etc.).
+;   Per cell we decode the NES attr group and translate (tile_id,
+;   group) into a Neo tile slot via neo_tile_group_lut (built at
+;   compose time, 1 KB indexed as tile_id * 4 + group).
+;
+; Exception (menu mode only): group-1 cells during the intro-story fade
+; must paint the blue-fill tile ($7F) regardless of what's in the cell,
+; so the "hidden" text curtain reads solid blue rather than text.
 ;
 ; Attribute byte -> group lookup. Each attribute byte covers a 4x4-cell
 ; region and carries 4 two-bit groups packed as:
@@ -97,6 +98,7 @@
 .import nt_dirty
 .import row_dirty
 .import tile_mode                       ; 0 = menu, 1 = map (see tileset.asm)
+.import neo_tile_group_lut              ; 1 KB LUT: (tile_id*4 + group) -> Neo slot
 
 .export HAL_FlushNametable
 
@@ -120,18 +122,21 @@ FF1_FONT_BASE       = $80               ; nametable bytes $80..$FF map to tile i
 
 .segment "ZEROPAGE"
 
-flush_ptr: .res 2
-attr_ptr:  .res 2
+flush_ptr:        .res 2
+attr_ptr:         .res 2
+tile_lookup_ptr:  .res 2                ; zp base for neo_tile_group_lut access
 
 .segment "BSS"
 
 flush_row:       .res 1
 flush_col:       .res 1
 flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
+pal_work:        .res 2                 ; scratch used by lookup_map_tile
 
 .segment "CODE"
 
 .proc HAL_FlushNametable
+
     ; --- Short-circuit on clean mirror --------------------------------------
     ; FF1 often leaves the nametable untouched for many frames (e.g. during
     ; the intro-story palette fade, where only palette RAM ticks). Repainting
@@ -295,9 +300,6 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
     ; --- tile-mode dispatch ------------------------------------------------
     ; Menu mode (0): NES $80..$FF -> tile id byte-$80, $00..$7F -> blank.
     ; Map mode  (1): NES $00..$7F -> tile id byte, $80..$FF -> unused.
-    ; Map mode also bypasses the attribute-group gate that the intro-story
-    ; fade relies on. Two bcc/bcs branches route through @skip_cell_trampoline
-    ; because @skip_cell sits past the -128 branch range below.
     pha
     lda tile_mode
     bne @mode_map
@@ -310,61 +312,37 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
     bra @menu_gate
 
 @mode_map:
-    pla
-    cmp #FF1_FONT_BASE
-    bcs @skip_cell_trampoline           ; >= $80 : unused on maps
-    pha                                 ; tile id = NES byte, 0..$7F
-    jmp @draw_tile                      ; skip attr-group gate
+    ; --- (tile_id, group) -> Neo slot -----------------------------------------
+    ; Map-mode nametable cells hold raw NES 8x8 tile ids (0..$FF), not the
+    ; $80-offset font ids. Each cell also belongs to an attribute group,
+    ; which determines which 4-colour sub-palette is in effect. The Neo
+    ; bake keeps only 128 (tile_id, group) variants (see chr_to_neo_gfx.py
+    ; --mode map-groups), so paint-time translation goes through
+    ; neo_tile_group_lut, indexed by (tile_id * 4 + group).
+    pla                                 ; A = tile_id (0..$FF)
+    jsr lookup_map_tile                 ; A -> Neo slot
+    pha                                 ; stash Neo slot for @draw_tile
+    jmp @draw_tile
 
 @skip_cell_trampoline:
     jmp @skip_cell
 
 @menu_gate:
-    ; --- blue-fill fast path: NES tile $FF (Neo id $7F) bypasses the gate --
-    ; It's the background fill whose pixels are all nibble 2 (blue) in every
-    ; NES palette group, so it should always be visible.
-    cmp #$7F
-    beq @draw_tile
-
-    ; --- attribute-group gate ----------------------------------------------
-    ; Look up this cell's NES attribute group (0..3). Skip rendering unless
-    ; the group is 2 (animating) or 3 (fully faded in). See file header for
-    ; the attr byte layout and shift derivation.
-    phy                                 ; save NT column index (Y)
-    lda flush_col
-    lsr
-    lsr                                 ; col >> 2 (0..7)
-    tay
-    lda (attr_ptr), y                   ; attr byte covering this cell
-    ply                                 ; restore Y
-
-    ; compute shift = flush_row_shift | (col & 2)
-    pha                                 ; save attr byte under tile id
-    lda flush_col
-    and #$02
-    ora flush_row_shift
-    tax                                 ; X = shift count (0/2/4/6)
-    pla                                 ; attr byte back in A
-@attr_shift_loop:
-    cpx #0
-    beq @attr_shift_done
-    lsr
-    lsr
-    dex
-    dex
-    bra @attr_shift_loop
-@attr_shift_done:
-    and #$03                            ; group 0..3
+    ; --- attribute-group gate (menu mode) ----------------------------------
+    ; Neo has no per-cell palette offset, so we can't render the four NES
+    ; attribute groups differently within one frame. The font-mode
+    ; HAL_PalettePush path keeps Neo slots $00..$03 loaded with group 3's
+    ; colours (FF1's default menu palette), so any group-3 cell paints
+    ; correctly. Group 0/2 regions (e.g. the name-input top box, group 0)
+    ; share those group-3 colours -- acceptable cosmetic limit. Group 1
+    ; is still special-cased: the intro-story fade uses it as a "hidden"
+    ; curtain, so we substitute the blue-fill tile ($7F) to preserve that
+    ; visual effect.
+    jsr decode_cell_group               ; A = group 0..3 (preserves stacked tile id)
     cmp #$01
-    bne @draw_tile                      ; groups 0/2/3: draw as-is
-    ; group 1: the intro-story "faded-out / invisible" palette. Swap in
-    ; the blue-fill tile so the text-to-be stays hidden under the curtain
-    ; until it fades. Group 0 is a legitimate visible palette on the
-    ; party-gen / name-input screens (the NES uses it to tint the top
-    ; box orange); we can't reproduce the tint on Neo but we must still
-    ; draw the border / text glyphs.
+    bne @draw_tile
     pla                                 ; drop real tile id
-    lda #$7F                            ; Neo id for NES tile $FF
+    lda #$7F                            ; Neo id for NES tile $FF (blue fill)
     pha
 @draw_tile:
 
@@ -433,5 +411,88 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
     jmp @row_loop
 @done:
 @skip_all:
+    rts
+.endproc
+
+; ---------------------------------------------------------------------------
+; decode_cell_group: return the NES attribute group (0..3) for the cell at
+; (flush_row, flush_col). Preserves X, Y and the caller's stacked tile id.
+; Reads attr_ptr (already set up for this row), flush_col, flush_row_shift.
+; Returns: A = group 0..3.
+; ---------------------------------------------------------------------------
+.proc decode_cell_group
+    phy                                 ; save caller's Y
+    phx                                 ; save caller's X
+
+    lda flush_col
+    lsr
+    lsr                                 ; col >> 2 (0..7)
+    tay
+    lda (attr_ptr), y                   ; attr byte
+
+    ; shift = flush_row_shift | (col & 2)
+    pha                                 ; save attr byte
+    lda flush_col
+    and #$02
+    ora flush_row_shift
+    tax                                 ; X = 0/2/4/6
+    pla                                 ; attr byte back in A
+@shift_loop:
+    cpx #0
+    beq @shift_done
+    lsr
+    lsr
+    dex
+    dex
+    bra @shift_loop
+@shift_done:
+    and #$03                            ; A = group 0..3
+
+    plx                                 ; restore caller's X
+    ply                                 ; restore caller's Y
+    rts
+.endproc
+
+; ---------------------------------------------------------------------------
+; lookup_map_tile: translate an NES map-mode tile_id into a Neo tile slot
+; using the build-time (tile_id * 4 + group) -> slot LUT. The cell's
+; attribute group is decoded via decode_cell_group (same flush_row /
+; flush_col state the caller is iterating).
+;   On entry : A = NES tile_id (0..$FF)
+;   On exit  : A = Neo tile slot (0..$7F)
+;   Preserves Y; clobbers X and uses tile_lookup_ptr on zp.
+; ---------------------------------------------------------------------------
+.proc lookup_map_tile
+    phy
+    pha                                 ; save tile_id
+    jsr decode_cell_group               ; A = group 0..3
+    sta pal_work                        ; scratch: stash group
+    pla                                 ; A = tile_id
+
+    ; offset_hi = tile_id >> 6  (top 2 bits, yields 0..3)
+    ; tile_lookup_ptr = neo_tile_group_lut + offset_hi * 256
+    pha                                 ; save tile_id again (need low bits)
+    and #$C0
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr                                 ; A = offset_hi (0..3)
+    clc
+    adc #>neo_tile_group_lut
+    sta tile_lookup_ptr + 1
+    lda #<neo_tile_group_lut
+    sta tile_lookup_ptr + 0
+
+    ; Y = (tile_id << 2) | group   (low 8 bits of 10-bit index)
+    pla                                 ; tile_id
+    asl
+    asl                                 ; tile_id << 2 (high bits drop off)
+    ora pal_work                        ; | group
+    tay
+    lda (tile_lookup_ptr), y            ; A = Neo tile slot
+
+    ply
     rts
 .endproc

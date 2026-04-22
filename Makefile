@@ -100,12 +100,21 @@ X16_MAPMAN_CONV  := $(SCRIPTDIR)/mapman_to_vera.py
 NEO_MAPMAN_POSES := $(BUILDDIR)/neo/mapman_poses.bin
 NEO_MAPMAN_CONV  := $(SCRIPTDIR)/mapman_to_neo_gfx.py
 
+# Class-portrait battle sprite CHR. Lives inside bank_09_data.bin at
+# offset $1000 ($9000 when the bank is swapped in). 2 rows of 16 tiles
+# per class, 12 classes = 192 tiles = 3 KB source, 6 KB VERA 4bpp.
+# Used by PtyGen_DrawChars to render the four class previews on the
+# party-generation screen, and reused in battle for attack/cast frames.
+X16_CLASS_VERA   := $(BUILDDIR)/x16/class_vera.bin
+X16_CLASS_CONV   := $(SCRIPTDIR)/extract_class_chr.py
+
 # Neo graphics plane artefacts. One .gfx per tileset; each file holds
 # 128 16x16 tile images + the cursor sprite. Neo's gfxObjectMemory only
 # has 128 tile slots total, so HAL_LoadTileset swaps files at runtime
 # (see memory/project_map_tileset_strategy.md).
 NEO_TILES_FONT_GFX := $(BUILDDIR)/neo/tiles_font.gfx
 NEO_TILES_OW_GFX   := $(BUILDDIR)/neo/tiles_ow.gfx
+NEO_TILES_OW_LUT   := $(BUILDDIR)/neo/tiles_ow_groups.lut
 NEO_TILES_CONV     := $(SCRIPTDIR)/chr_to_neo_gfx.py
 
 # --- Core routines hooked through scripts/hook_ppu.py ----------------------
@@ -132,6 +141,8 @@ CORE_HOOKED_SRCS = $(SRCDIR)/core/title_copyright.asm \
                    $(SRCDIR)/core/draw_2x2_sprite.asm \
                    $(SRCDIR)/core/draw_cursor.asm \
                    $(SRCDIR)/core/lut_cursor_2x2_sprite_table.asm \
+                   $(SRCDIR)/core/draw_simple_2x3_sprite.asm \
+                   $(SRCDIR)/core/lut_class_bat_spr_palette.asm \
                    $(SRCDIR)/core/pty_gen.asm \
                    $(SRCDIR)/core/map_draw.asm \
                    $(SRCDIR)/core/ow_player_sprite.asm \
@@ -165,7 +176,7 @@ all: build-x16 build-neo
 
 build-x16: $(X16_OUT)
 
-$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT) $(X16_MAP_OW) $(X16_OWMAP) $(X16_OWTILESET) $(X16_INTRO_BIN) $(X16_CURSOR_VERA) $(X16_MAPMAN_VERA)
+$(BUILDDIR)/x16/%.o: $(SRCDIR)/%.asm $(X16_FONT) $(X16_MAP_OW) $(X16_OWMAP) $(X16_OWTILESET) $(X16_INTRO_BIN) $(X16_CURSOR_VERA) $(X16_MAPMAN_VERA) $(X16_CLASS_VERA)
 	@mkdir -p $(dir $@)
 	$(CA65) --cpu 65C02 -D __X16__ -I $(SRCDIR) -I $(BUILDDIR)/core \
 	        --bin-include-dir $(BUILDDIR)/x16 -o $@ $<
@@ -202,7 +213,7 @@ load-x16: build-x16
 
 build-neo: $(NEO_OUT)
 
-$(BUILDDIR)/neo/%.o: $(SRCDIR)/%.asm $(NEO_INTRO_BIN) $(NEO_OWMAP) $(NEO_OWTILESET)
+$(BUILDDIR)/neo/%.o: $(SRCDIR)/%.asm $(NEO_INTRO_BIN) $(NEO_OWMAP) $(NEO_OWTILESET) $(NEO_TILES_OW_LUT)
 	@mkdir -p $(dir $@)
 	$(CA65) --cpu 65C02 -D __NEO__ -I $(SRCDIR) -I $(BUILDDIR)/core \
 	        --bin-include-dir $(BUILDDIR)/neo -o $@ $<
@@ -346,6 +357,10 @@ $(X16_MAPMAN_VERA): $(X16_MAPMAN_CONV) $(MAPMAN_CHR)
 	@mkdir -p $(dir $@)
 	python3 $(X16_MAPMAN_CONV) $(MAPMAN_CHR) $@
 
+$(X16_CLASS_VERA): $(X16_CLASS_CONV) $(FF1_FONT_RAW)
+	@mkdir -p $(dir $@)
+	python3 $(X16_CLASS_CONV) $(FF1_FONT_RAW) "$(FF1_BANK_09_ASM)" $@
+
 $(NEO_MAPMAN_POSES): $(NEO_MAPMAN_CONV) $(MAPMAN_CHR)
 	@mkdir -p $(dir $@)
 	python3 $(NEO_MAPMAN_CONV) $(MAPMAN_CHR) $@
@@ -356,11 +371,13 @@ $(NEO_TILES_FONT_GFX): $(NEO_TILES_CONV) $(FF1_FONT_RAW) $(CURSOR_CHR)
 	    --tiles $(FF1_FONT_RAW) --tiles-offset $(FF1_FONT_OFF) \
 	    --cursor $(CURSOR_CHR) --output $@
 
-$(NEO_TILES_OW_GFX): $(NEO_TILES_CONV) $(FF1_MAP_OW_RAW) $(CURSOR_CHR) $(NEO_MAPMAN_POSES)
-	@mkdir -p $(dir $@)
-	python3 $(NEO_TILES_CONV) --mode map \
+$(NEO_TILES_OW_GFX) $(NEO_TILES_OW_LUT) &: $(NEO_TILES_CONV) $(FF1_MAP_OW_RAW) $(CURSOR_CHR) $(NEO_MAPMAN_POSES) $(NEO_OWMAP) $(NEO_OWTILESET)
+	@mkdir -p $(dir $(NEO_TILES_OW_GFX))
+	python3 $(NEO_TILES_CONV) --mode map-groups \
 	    --tiles $(FF1_MAP_OW_RAW) --tiles-offset $(FF1_MAP_OW_OFF) \
-	    --cursor $(CURSOR_CHR) --mapman $(NEO_MAPMAN_POSES) --output $@
+	    --cursor $(CURSOR_CHR) --mapman $(NEO_MAPMAN_POSES) \
+	    --owmap $(NEO_OWMAP) --owtileset $(NEO_OWTILESET) \
+	    --lut-output $(NEO_TILES_OW_LUT) --output $(NEO_TILES_OW_GFX)
 
 # --- Housekeeping ----------------------------------------------------------
 
