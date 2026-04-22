@@ -22,6 +22,8 @@
 .export format_buf
 .export ch_name, ch_class, ch_ailments, ch_weapons, ch_armor, ch_spells
 .export ptygen
+.export namecurs_x, namecurs_y
+.export name_selectedtile, name_cursoradd, name_buf
 .export respondrate, cursor
 .export joy, joy_a, joy_b, joy_start, joy_select, joy_prevdir, joy_ignore
 .export spr_x, spr_y, sprindex
@@ -100,6 +102,18 @@ ch_spells:   .res $100
 ; 64 bytes, 16 per character. Field layout (from FF1's variables.inc) is
 ; defined as constants in pty_gen_shim where they're consumed.
 ptygen:          .res 64
+
+; --- Name-input scratch --------------------------------------------------
+; namecurs_x/y track the letter-grid selection cursor (0..9 x 0..6).
+; name_selectedtile / name_cursoradd / name_buf replace FF1's $10 / $63 /
+; $5C hard-coded NES zero-page locals, which on our hosts would collide
+; with KERNAL / firmware memory. Kept as plain BSS so the verbatim extract
+; resolves via = aliases defined in pty_gen_shim.
+namecurs_x:        .res 1
+namecurs_y:        .res 1
+name_selectedtile: .res 1
+name_cursoradd:    .res 1
+name_buf:          .res 5      ; 4 name tiles + null terminator
 
 ; --- Title-screen state ----------------------------------------------------
 respondrate: .res 1        ; sound-effect speed setting, 0..7

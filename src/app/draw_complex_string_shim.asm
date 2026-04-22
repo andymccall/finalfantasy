@@ -125,18 +125,21 @@ W_ = $A0
 D_ = $8D
 O_ = $98
 
+; All names padded to 7 tiles (+ null) so a shorter class doesn't leave
+; trailing tiles from a longer one when the user cycles classes (e.g.
+; FIGHTER -> THIEF would leave "ER" on the right without the padding).
 name_fighter:
     .byte F_,I_,G_,H_,T_,E_,R_, $00
 name_thief:
-    .byte T_,H_,I_,E_,F_, $00
+    .byte T_,H_,I_,E_,F_,$FF,$FF, $00
 name_blackbelt:
-    .byte B_,L_,A_,C_,K_, B_,T_, $00       ; abbreviated to fit
+    .byte B_,L_,A_,C_,K_,B_,T_, $00        ; abbreviated to fit
 name_redmage:
-    .byte R_,E_,D_, M_,A_,G_, $00
+    .byte R_,E_,D_,$FF,M_,A_,G_, $00
 name_whitemage:
-    .byte W_,H_,T_, M_,A_,G_, $00
+    .byte W_,H_,T_,$FF,M_,A_,G_, $00
 name_blackmage:
-    .byte B_,L_,K_, M_,A_,G_, $00
+    .byte B_,L_,K_,$FF,M_,A_,G_, $00
 
 .segment "CODE"
 

@@ -60,6 +60,7 @@
 .import DrawBox
 .import DrawComplexString
 .import DrawCursor                      ; real 2x2-sprite impl lives in sprite_shim
+.import DrawPalette                     ; for TurnMenuScreenOn_ClearOAM
 .import CallMusicPlay                   ; audio stub lives in box_drawing_shim
 .import UpdateJoy                       ; real impl lives in joy_shim
 
@@ -105,10 +106,13 @@ LoadMenuCHRPal:
     rts
 
 ; TurnMenuScreenOn_ClearOAM on the NES flips PPUCTRL/PPUMASK bits to
-; enable rendering after ClearOAM. Our PPU is always on, so we just
-; fall through to ClearOAM.
+; enable rendering after ClearOAM, and crucially calls DrawPalette to
+; push cur_pal out to $3F00..$3F1F. Our PPU is always on, but callers
+; (PtyGen_DrawScreen, DrawNameInputScreen) rely on the palette-push
+; side effect so cur_pal shuffles made before the call land in VERA.
 TurnMenuScreenOn_ClearOAM:
-    ; fall through to ClearOAM
+    jsr ClearOAM
+    jmp DrawPalette
 
 ; ClearOAM mirrors the NES routine (bank_0F.asm:984): fill the entire
 ; 256-byte oam buffer with $F8 (Y = $F8 is the NES off-screen marker

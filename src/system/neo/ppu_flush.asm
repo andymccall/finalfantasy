@@ -333,12 +333,14 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
     bra @attr_shift_loop
 @attr_shift_done:
     and #$03                            ; group 0..3
-    cmp #$02
-    bcs @draw_tile                      ; group 2/3: draw the glyph as-is
-    ; groups 0/1: the glyph must read as blue (nibble 2 on every group is
-    ; $01 blue on NES, so the cell looks identical to the surrounding
-    ; tile-$FF curtain). Swap in the blue-fill tile so the black pre-
-    ; clear doesn't leave a hole where the text will fade in.
+    cmp #$01
+    bne @draw_tile                      ; groups 0/2/3: draw as-is
+    ; group 1: the intro-story "faded-out / invisible" palette. Swap in
+    ; the blue-fill tile so the text-to-be stays hidden under the curtain
+    ; until it fades. Group 0 is a legitimate visible palette on the
+    ; party-gen / name-input screens (the NES uses it to tint the top
+    ; box orange); we can't reproduce the tint on Neo but we must still
+    ; draw the border / text glyphs.
     pla                                 ; drop real tile id
     lda #$7F                            ; Neo id for NES tile $FF
     pha

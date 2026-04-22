@@ -12,17 +12,13 @@
 ;   PtyGen_DrawBoxes / PtyGen_DrawText / PtyGen_DrawOneText
 ;   lut_PtyGenBuf
 ;
-; Stubs supplied here (unreached by this milestone or out of scope):
+; Stubs supplied here:
 ;   LoadNewGameCHRPal   -- CHR/palette upload is done once at boot via
 ;                          HAL_LoadTiles + DrawPalette.
 ;   PtyGen_DrawChars    -- the four 2x3 class-preview sprites need CHR
 ;                          from BANK_BTLCHR which isn't wired up yet.
 ;                          Return immediately so the cursor is the only
 ;                          sprite on screen.
-;   DoNameInput         -- name-entry sub-screen (bank_0E.asm:2766) is a
-;                          separate milestone. Auto-fills the four name
-;                          bytes with spaces and CLC/RTS to let the
-;                          4-character loop advance.
 ;
 ; The cur_pal+$1/$2/$3 writes at the top of NewGamePartyGeneration shuffle
 ; BG palette group 0 -- which isn't drawn to on the party-gen screen
@@ -33,7 +29,11 @@
 
 .feature force_range
 
+.import HAL_PPU_2000_Write
 .import HAL_PPU_2001_Write
+.import HAL_PPU_2005_Write
+.import HAL_PPU_2006_Write
+.import HAL_PPU_2007_Write
 .import HAL_APU_4014_Write
 .import HAL_APU_4015_Write
 .import HAL_WaitVblank
@@ -61,6 +61,9 @@
 .import format_buf
 .import ptygen
 .import char_index
+.import cursor
+.import namecurs_x, namecurs_y
+.import name_selectedtile, name_cursoradd, name_buf
 .import oam
 .import spr_x, spr_y
 .import joy, joy_a, joy_b, joy_prevdir
@@ -110,20 +113,6 @@ LoadNewGameCHRPal:
     rts
 
 PtyGen_DrawChars:
-    rts
-
-; Auto-confirm name input: fill the 4-byte name with spaces ($FF is the
-; NES "blank" tile the original code would leave in place if the user
-; cleared every letter on the name-entry screen), clear carry to signal
-; "name accepted", and RTS back into the character loop.
-DoNameInput:
-    ldx char_index
-    lda #$FF
-    sta ptygen_name + 0, x
-    sta ptygen_name + 1, x
-    sta ptygen_name + 2, x
-    sta ptygen_name + 3, x
-    clc
     rts
 
 .include "pty_gen.inc"

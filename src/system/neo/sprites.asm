@@ -31,8 +31,16 @@
 ;   P1/P2     X coord (16-bit, screen pixels)
 ;   P3/P4     Y coord (16-bit)
 ;   P5        image index (0 = first 16x16 sprite in tiles.gfx)
-;   P6        flip/anchor (0 = no flip, default anchor = top-left)
-;   P7        flags (bit 6 = 32x32; 0 here -> 16x16)
+;   P6        flip (bit 0 = H-flip, bit 1 = V-flip; 0 = no flip)
+;   P7        anchor (0..9; 0 = *centre*, 7 = top-left. Firmware
+;             offsets the draw position by anchorX/Y * size/2, so
+;             anchor=0 renders a 16x16 sprite at (X,Y) from (X-8,Y-8).
+;             FF1 feeds us top-left NES coords, so we pick anchor 7.)
+;
+; Note: the BASIC docs describe P6 as "Flip and Anchor and Flags" but
+; the firmware (sprites.cpp SPRUpdate) reads flip from paramData[6]
+; and anchor from paramData[7]. Size (16 vs 32) comes from bit 6 of
+; P5 (imageSize), not a separate flags byte.
 ;
 ; Sprite Hide parameters (Group $06, Function $03):
 ;   P0        sprite number
@@ -103,8 +111,9 @@ GUTTER_X             = 32               ; must match ppu_flush.asm
     sta API_PARAMETERS + 4
 
     stz API_PARAMETERS + 5              ; image index 0 (first 16x16 sprite)
-    stz API_PARAMETERS + 6              ; no flip, default anchor
-    stz API_PARAMETERS + 7              ; flags = 0 -> 16x16
+    stz API_PARAMETERS + 6              ; flip = 0 (no H/V flip)
+    lda #7                              ; anchor = top-left (see header)
+    sta API_PARAMETERS + 7
 
     lda #API_FN_SPRITE_SET
     sta API_FUNCTION
