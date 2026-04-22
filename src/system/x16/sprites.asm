@@ -75,15 +75,16 @@ SPRITE_TILE_H = $11                     ; bank 1, stride +1
 SPRITE_DATA_ADDR_L = $80
 SPRITE_DATA_ADDR_H = $09
 
-; Sprite palette. The cursor CHR uses nibble values 1/2/3 for hand body
-; (most pixels), edge highlight, and outline respectively. With palette
-; offset 1 in byte +7, those nibbles index VERA palette slots 17/18/19
-; (at VRAM $1:FA22 / $1:FA24 / $1:FA26 -- two bytes per slot, GB then R).
-; We paint all three white for now; finer cursor shading lands with the
-; full NES-palette mapping. Slot 16 (nibble 0) is transparent as usual.
-SPRITE_PAL_ADDR_L = $22                 ; slot 17 * 2 = $22
-SPRITE_PAL_ADDR_M = $FA
-SPRITE_PAL_ADDR_H = $11
+; Sprite palette. The cursor CHR uses nibble values 1/2/3 (see
+; scripts/cursor_to_vera.py). With palette offset 4 in byte +7 those
+; nibbles index VERA palette slots 65/66/67 (slot 64 = nibble 0 =
+; transparent). palette.asm's splay() maps NES sprite palette 0
+; ($3F10..$3F13) to VERA slots $40..$43 (= 64..67), so DrawPalette's
+; writes land exactly where the cursor expects to read them. FF1's
+; title-screen cursor wants NES sprite palette 3 ($0F/$30/$10/$00);
+; VERA's palette-offset granularity is 16 slots per sprite, so we
+; stage those four colours into NES sprite palette 0 in main.asm's
+; title_palette LUT instead.
 
 .segment "RODATA"
 
@@ -116,23 +117,6 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
     cpx #CURSOR_PIXEL_BYTES
     bne @pix_loop
 
-    ; --- sprite palette slots 17/18/19 all = white ($0FFF) ------------------
-    ; 2 bytes per slot: low byte = GB nibbles, high byte = 0R nibbles.
-    lda #SPRITE_PAL_ADDR_L
-    sta VERA_ADDR_L
-    lda #SPRITE_PAL_ADDR_M
-    sta VERA_ADDR_M
-    lda #SPRITE_PAL_ADDR_H
-    sta VERA_ADDR_H
-    ldx #3
-@pal_loop:
-    lda #$FF                            ; GB = $FF
-    sta VERA_DATA0
-    lda #$0F                            ; 0R = $0F
-    sta VERA_DATA0
-    dex
-    bne @pal_loop
-
     ; --- program 4 sprite attributes, all hidden (y = $3FF) -----------------
     ; Sprite slot 0..3 at $1FC00, $1FC08, $1FC10, $1FC18.
     lda #SPRITE_ATTR_L
@@ -164,8 +148,11 @@ CURSOR_PIXEL_BYTES = cursor_sprite_pixels_end - cursor_sprite_pixels
     ; OAMDMA hook re-enables (z=3) each frame for slots with visible
     ; NES OAM entries and disables the rest.
     stz VERA_DATA0
-    ; +7: size 8x8 (height=0, width=0), palette offset 1 (slots 16..31)
-    lda #$01
+    ; +7: size 8x8 (height=0, width=0), palette offset 4 (slots 64..79).
+    ; palette.asm splays NES sprite palette 0 ($3F10..$3F13) into VERA
+    ; slots $40..$43, so offset 4 (slot base 64) lines cursor nibbles
+    ; 0..3 up with NES sprite-palette colours 0..3.
+    lda #$04
     sta VERA_DATA0
     inx
     cpx #4

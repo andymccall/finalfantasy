@@ -1,20 +1,20 @@
 ; ---------------------------------------------------------------------------
 ; tiles_load.asm - X16 HAL_LoadTiles implementation.
 ; ---------------------------------------------------------------------------
-; Uploads the converted FF1 font (128 glyphs, 1bpp, 8 bytes per tile) into
-; VERA character memory. The X16 boot default places layer 1's tile base at
-; VRAM $1F000, so tile slot N starts at $1F000 + N * 8.
+; Uploads the 128 converted FF1 tiles (VERA 4bpp packed, 32 bytes each =
+; 4 KB total) into layer 1's tile base, populated such that NES nametable
+; bytes $80..$FF index directly into VERA tile slots $80..$FF.
 ;
-; We write the 128 glyphs contiguously starting at slot $80, so tile slot
-; $80 = FF1 tile $80 (digit '0'), ..., tile slot $8A = FF1 tile $8A ('A'),
-; ..., tile slot $FF = FF1 tile $FF. The Kernal-supplied PETSCII font for
-; slots $01-$7F is left intact -- FF1 never references those slots -- but
-; slot $00 gets its 8 bytes of pixel data zeroed so cells that the virtual
-; PPU leaves at $00 render as a blank. (PETSCII $00 is '@', which would
-; otherwise bleed through every untouched nametable cell.)
+; Layer 1's tile base lives at VRAM $1:C000 (programmed in HAL_Init), so
+; tile slot N starts at $1:C000 + N * 32. The FF1 tile upload therefore
+; targets VRAM $1:C000 + $80 * 32 = $1:D000, running for 4 KB to cover
+; slots $80..$FF.
 ;
-; Source byte count is 128 * 8 = 1024 = four full pages, so the FF1
-; upload uses a simple 4-page outer loop with no partial-page tail.
+; Tile slot 0 is explicitly zeroed (32 bytes of transparent pixels). The
+; flush maps NES nametable byte $00 (FF1's ClearNT sentinel) to tile slot
+; 0 so cleared cells render as blank over the host background. Slots
+; $01..$7F are left at whatever the tile base contained before we took
+; over; FF1 never emits those as nametable bytes, so it doesn't matter.
 ; ---------------------------------------------------------------------------
 
 .export HAL_LoadTiles
@@ -23,14 +23,15 @@ VERA_ADDR_L   = $9F20
 VERA_ADDR_M   = $9F21
 VERA_ADDR_H   = $9F22
 VERA_DATA0    = $9F23
-VERA_L1_TBASE = $9F36                   ; bits 7:2 = VRAM[16:11]; bits 1:0 = tile size
 
-; Pin layer 1's tile base to VRAM $1F000 (value $F8: bits 7:2 = %111110,
-; bits 1:0 = 0 for 8x8 tiles) regardless of what the Kernal left behind.
-L1_TBASE_VAL  = $F8
+; Tile slot 0 at VRAM $1:C000.
+BLANK_L       = $00
+BLANK_M       = $C0
+BLANK_H       = $11                     ; bank 1, stride +1
 
-TILEBASE_L    = $00                     ; upload start = $1F000 + $80 * 8 = $1F400
-TILEBASE_M    = $F4
+; FF1 tile upload at VRAM $1:D000 (= slot $80, since slot stride is 32).
+TILEBASE_L    = $00
+TILEBASE_M    = $D0
 TILEBASE_H    = $11                     ; bank 1, stride +1
 
 .segment "ZEROPAGE"
@@ -43,27 +44,25 @@ ff1_font:
     .incbin "font_converted.bin"
 ff1_font_end:
 
-FONT_SIZE = ff1_font_end - ff1_font
+FONT_SIZE_PAGES = (ff1_font_end - ff1_font) >> 8
 
 .segment "CODE"
 
 .proc HAL_LoadTiles
-    lda #L1_TBASE_VAL
-    sta VERA_L1_TBASE
-
-    ; --- blank VRAM slot $00 (VRAM $1F000, 8 bytes) -------------------------
-    stz VERA_ADDR_L
-    lda #$F0
+    ; --- zero tile slot 0 (32 bytes) ----------------------------------------
+    lda #BLANK_L
+    sta VERA_ADDR_L
+    lda #BLANK_M
     sta VERA_ADDR_M
-    lda #$11                            ; bank 1, stride +1
+    lda #BLANK_H
     sta VERA_ADDR_H
-    ldx #8
+    ldx #32
 @blank_loop:
     stz VERA_DATA0
     dex
     bne @blank_loop
 
-    ; --- point VERA at slot $80 and upload the FF1 font ---------------------
+    ; --- point VERA at slot $80 and upload the FF1 tile CHR -----------------
     lda #TILEBASE_L
     sta VERA_ADDR_L
     lda #TILEBASE_M
@@ -76,7 +75,7 @@ FONT_SIZE = ff1_font_end - ff1_font
     lda #>ff1_font
     sta font_ptr + 1
 
-    ldx #>FONT_SIZE                     ; page count (exactly 4 pages)
+    ldx #FONT_SIZE_PAGES                ; 4096 / 256 = 16 pages
 @page_loop:
     ldy #0
 @byte_loop:

@@ -5,10 +5,21 @@
 ; SEI guards the poll so the KERNAL IRQ handler (which also acks VSYNC)
 ; cannot race us, then CLI lets it catch up on keyboard / jiffy.
 ;
-; On init the text layer map is cleared to (char=0, attr=$01) so any later
-; flush of the PPU nametable mirror paints into a known background. After
-; each vblank the HAL copies the 32x30 visible region of the mirror into
-; the VERA text layer.
+; On init layer 1 is switched into 4bpp tile mode with a 32x32 tile map,
+; 8x8 tiles, pointed at:
+;   - tile map  at VRAM $1:B000  (2 KB, 32x32 * 2 bytes per entry)
+;   - tile base at VRAM $1:C000  (8 KB, 256 slots * 32 bytes per tile)
+;
+; Tile slot 0 is the "blank" tile (all transparent pixels), used wherever
+; the virtual PPU's nametable mirror holds a $00 byte (FF1's ClearNT
+; sentinel). FF1 nametable bytes $80..$FF go straight through as tile
+; slot ids -- the converted font CHR is uploaded into those slots by
+; HAL_LoadTiles.
+;
+; The tile map is zeroed at boot so every cell starts as the blank tile;
+; the first HAL_FlushNametable call after EnterIntroStory / EnterTitleScreen
+; paints the visible 32x30 region with the real tile ids + NES-attribute-
+; derived palette offsets.
 ;
 ; Chaining the KERNAL IRQ vector at $0314 is avoided because the IRQ target
 ; lives behind ROM-bank switching that the application does not control.
@@ -32,17 +43,42 @@ VERA_CTRL      = $9F25
 VERA_ISR       = $9F27
 VERA_DC_HSCALE = $9F2A                  ; DCSEL=0: horizontal output scale
 VERA_DC_VSCALE = $9F2B                  ; DCSEL=0: vertical output scale
+VERA_L1_CONFIG    = $9F34
+VERA_L1_MAPBASE   = $9F35
+VERA_L1_TILEBASE  = $9F36
 VERA_L1_HSCROLL_L = $9F37
 VERA_L1_HSCROLL_H = $9F38
-; Text-screen map defaults to VRAM $1B000 on boot, 2 bytes per cell.
+
+; Layer 1 tile-mode configuration:
+;   L1_CONFIG    = %00_01_0_0_10  = $12    (map 64x32, T256C=0, tile mode, 4bpp)
+;   L1_MAPBASE   = $1B000 >> 9    = $D8    (tile map  at VRAM $1:B000, 4 KB)
+;   L1_TILEBASE  = ($1C000 >> 11) << 2 = $E0  (tile base at VRAM $1:C000,
+;                                              tile size 8x8 -- bits 1:0 = 0)
+; The 64x32 map gives enough horizontal slack that nothing wraps around
+; the edge of the visible NES region. We render the 32-col NES viewport
+; into map columns 16..47 (dead centre) and leave map columns 0..15 and
+; 48..63 as blank tile slot 0, so scroll artefacts and text that spills
+; past column 31 land in blank space instead of re-appearing on the far
+; side of the screen.
+L1_CONFIG_VAL   = $12
+L1_MAPBASE_VAL  = $D8
+L1_TILEBASE_VAL = $E0
+
+; Tile map: 64 cols * 32 rows * 2 bytes = 4 KB at VRAM $1:B000.
+TILEMAP_L       = $00
+TILEMAP_M       = $B0
+TILEMAP_H       = $11                   ; bank 1, stride +1
+TILEMAP_BYTES_HI = $10                  ; 4 KB = 16 pages
 
 DC_SCALE_2X    = $40                    ; scale_factor = 128 / this, so $40 -> 2x
 
-; Centre the NES 256-wide viewport in 320-wide VERA output: 32-pixel gutter
-; each side. HSCROLL shifts the viewport, so to push the image right we
-; scroll the camera left. -32 in 12-bit two's complement is $FE0.
-HSCROLL_CENTER_L = $E0
-HSCROLL_CENTER_H = $0F
+; With a 64-column map, the map's horizontal extent is 512 source pixels.
+; NES col 0 lives at map col 16 = pixel 128; we want that to render at
+; display pixel 32 (so the 256-wide NES region sits in the middle of the
+; 320-wide VERA output with 32-pixel gutters). HSCROLL pushes the camera
+; right, so the required value is 128 - 32 = 96 = $060.
+HSCROLL_CENTER_L = $60
+HSCROLL_CENTER_H = $00
 
 ; ---------------------------------------------------------------------------
 ; PRG header + BASIC stub: 10 SYS2061
@@ -75,28 +111,35 @@ basic_stub_end:
     sta VERA_DC_HSCALE
     sta VERA_DC_VSCALE
 
+    ; --- point layer 1 at our 4bpp 32x32 tile map + tile base ---------------
+    lda #L1_CONFIG_VAL
+    sta VERA_L1_CONFIG
+    lda #L1_MAPBASE_VAL
+    sta VERA_L1_MAPBASE
+    lda #L1_TILEBASE_VAL
+    sta VERA_L1_TILEBASE
+
     ; --- centre the 32x30 NES region in the 40x30 VERA viewport -------------
     lda #HSCROLL_CENTER_L
     sta VERA_L1_HSCROLL_L
     lda #HSCROLL_CENTER_H
     sta VERA_L1_HSCROLL_H
 
-    ; --- clear the text layer map ($1:B000..$1:EFFF, 16 KiB) ----------------
-    stz VERA_ADDR_L
-    lda #$B0
+    ; --- zero the 4 KB tile map ($1:B000..$1:BFFF) --------------------------
+    lda #TILEMAP_L
+    sta VERA_ADDR_L
+    lda #TILEMAP_M
     sta VERA_ADDR_M
-    lda #$11                            ; bit16=1, stride=+1
+    lda #TILEMAP_H
     sta VERA_ADDR_H
 
-    ldx #$20                            ; $20 outer iterations * 256 cells
+    ldx #TILEMAP_BYTES_HI               ; 8 pages of 256 bytes
 @page:
     ldy #0
-@cell:
-    stz VERA_DATA0                      ; char = $00
-    lda #$01
-    sta VERA_DATA0                      ; attr = white fg on black bg
+@byte:
+    stz VERA_DATA0
     iny
-    bne @cell
+    bne @byte
     dex
     bne @page
 

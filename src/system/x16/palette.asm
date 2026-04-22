@@ -3,9 +3,31 @@
 ; ---------------------------------------------------------------------------
 ; Called by the virtual PPU every time FF1 writes a byte in the $3F00..$3F1F
 ; palette window. Translates the NES colour index in A to a VERA 12-bit RGB
-; word via a fixed 64-entry LUT, and pokes it into VERA palette RAM at
-; $1FA00 + X*2 (so slot X ends up at VERA palette index X, matching the
-; NES's 0..31 slot layout).
+; word via a fixed 64-entry LUT, and pokes it into a VERA palette slot
+; derived from the NES slot number.
+;
+; NES-slot -> VERA-slot splay:
+;   The NES slot number X is a 5-bit value SNNCC where S is the BG/sprite
+;   flag (bit 4: 0 = BG, 1 = sprite), NN is the attribute group (0..3),
+;   and CC is the colour within that group (0..3). VERA's 4bpp tile
+;   renderer uses the tile-map "palette offset" field to pick a 16-colour
+;   palette slice (slots N*16 + 0..15). We need NES group N's four
+;   colours to land at VERA slots N*16 + 0..3 so a tile pixel with NES
+;   colour-index value CC resolves to the right colour after VERA adds
+;   palette_offset * 16. Sprites get the same treatment but reserve the
+;   upper half of the palette so BG and sprite writes don't collide.
+;
+;   splay(X) = ((X & $10) << 2) | ((X & $0C) << 2) | (X & $03)
+;     X = %000SNNCC  ->  VERA slot = %0SNN00CC
+;
+;   NES slot $00..$03 -> VERA $00..$03  (bg palette 0)
+;   NES slot $04..$07 -> VERA $10..$13  (bg palette 1)
+;   NES slot $08..$0B -> VERA $20..$23  (bg palette 2)
+;   NES slot $0C..$0F -> VERA $30..$33  (bg palette 3)
+;   NES slot $10..$13 -> VERA $40..$43  (sprite palette 0)
+;   NES slot $14..$17 -> VERA $50..$53  (sprite palette 1)
+;   NES slot $18..$1B -> VERA $60..$63  (sprite palette 2)
+;   NES slot $1C..$1F -> VERA $70..$73  (sprite palette 3)
 ;
 ; VERA palette RAM format: two bytes per colour, little-endian, $0RGB
 ; (high nibble of byte 0 = G, low nibble of byte 0 = B, low nibble of
@@ -29,6 +51,11 @@ VERA_DATA0  = $9F23
 
 ; ---------------------------------------------------------------------------
 
+.segment "BSS"
+
+pal_splay_lo: .res 1                    ; scratch for splay() colour-bits half
+pal_splay_hi: .res 1                    ; scratch for splay() BG/sprite bit
+
 .segment "CODE"
 
 .proc HAL_PalettePush
@@ -36,9 +63,28 @@ VERA_DATA0  = $9F23
     phy                                 ; save caller's Y
     pha                                 ; save caller's A (NES colour)
 
-    ; --- point VERA at $1FA00 + slot*2, auto-increment +1 ------------------
+    ; --- splay NES slot X (%000SNNCC) -> VERA slot (%0SNN00CC), then *2 -----
+    ; S = bit 4 (0 = BG, 1 = sprite); NN = bits 3:2 (attribute group 0..3);
+    ; CC = bits 1:0 (colour within group). The mapping puts BG groups 0..3
+    ; at VERA slot bases $00/$10/$20/$30 and sprite groups 0..3 at
+    ; $40/$50/$60/$70, so each VERA 16-slot slice holds one NES group's
+    ; four colours at offsets 0..3. Without propagating S, sprite palette
+    ; writes would collide with the BG slots.
     txa
-    asl                                 ; slot * 2
+    and #$03                            ; A = %00000CC (low 2 bits)
+    sta pal_splay_lo
+    txa
+    and #$10                            ; A = %000S0000 (BG/sprite flag)
+    asl
+    asl                                 ; A = %0S000000 (into bit 6)
+    sta pal_splay_hi
+    txa
+    and #$0C                            ; A = %0000NN00
+    asl
+    asl                                 ; A = %00NN0000
+    ora pal_splay_hi                    ; A = %0SNN0000
+    ora pal_splay_lo                    ; A = %0SNN00CC  (splayed slot)
+    asl                                 ; A = splayed slot * 2 (VERA byte addr)
     sta VERA_ADDR_L
     lda #$FA
     sta VERA_ADDR_M

@@ -157,23 +157,35 @@ GameStart_L:
 
 ; FF1 title-screen palette. On a real NES the menu/title screen uses a
 ; single shared palette group across the whole screen (ClearNT fills the
-; attribute table with $FF -- i.e. every quadrant picks palette group 3),
-; and the boxes look different because the box *tiles* themselves draw
-; lighter/darker pixels using the group's slots 1..3. So group 3 is the
-; one that actually drives every cell we render; the other groups are
-; staged for palette-trap completeness and to match the NES behaviour of
-; writing the full $3F00..$3F1F range.
-;
-; Slots 2/3 (the grey-highlight channel on real NES box tiles) can't be
-; expressed in X16 text mode -- each text cell has one fg and one bg
-; colour -- so we hold them at white. The grey outline detail comes back
-; with the tile/bitmap renderer switch.
+; attribute table with $FF -- i.e. every quadrant picks palette group 3).
+; Group 3 carries the "blue border" palette FF1's LoadBorderPalette_Blue
+; writes at $3F0C..$3F0F: black(0F) / dark-grey(00) / blue(01) / white(30).
+; Box-border tiles use pixel values 1/2/3 to render dark-grey outlines,
+; blue fill, and white highlights respectively; the intro story's "fade-
+; in" palette group 2 also wants color 2 = blue so tile $FF (the blank
+; space tile, all pixels = nibble 2) renders the blue background.
+; Groups 0/1/2 are staged for palette-trap completeness and to match
+; the NES behaviour of writing the full $3F00..$3F1F range.
+; Groups 1 and 2 are pre-faded to blue ($01) in colour slots 2/3: on the NES
+; EnterIntroStory writes $01 to cur_pal+$6/$7/$A/$B while the PPU is off, so
+; the flashed text is never visible. Our HAL flushes every vblank regardless
+; of PPU-on state, so we must land the faded values in VERA before the first
+; frame is drawn — otherwise the nametable paints once with group 1 fully
+; visible before the fade animation kicks in. Groups 0 and 3 stay at the
+; border palette; group 3 is what the text fades INTO at the end.
 title_palette:
-    .byte $0F, $30, $30, $30            ; group 0 (unused by title)
-    .byte $0F, $30, $30, $30            ; group 1 (unused by title)
-    .byte $0F, $30, $30, $30            ; group 2 (unused by title)
-    .byte $01, $30, $30, $30            ; group 3: blue bg, white fg -- the title screen
-    .byte $0F, $30, $30, $30            ; sprite groups (unused, staged only)
-    .byte $0F, $30, $30, $30
-    .byte $0F, $30, $30, $30
-    .byte $0F, $30, $30, $30
+    .byte $0F, $00, $01, $30            ; group 0 (unused by title)
+    .byte $0F, $00, $01, $01            ; group 1: faded-out (blue on blue)
+    .byte $0F, $00, $01, $01            ; group 2: animating (starts blue)
+    .byte $0F, $00, $01, $30            ; group 3: fully faded in (blue border)
+    ; Sprite palette 0 lands in VERA slots 16..19. With sprite palette
+    ; offset = 1 on the cursor, nibbles 1/2/3 of the cursor CHR resolve
+    ; to slots 17/18/19. FF1's NES sprite palette 3 on the title screen
+    ; is $0F/$30/$10/$00 (black/white/light-grey/mid-grey); VERA sprite
+    ; palette-offset granularity is 16 slots, so we flatten those values
+    ; into sprite palette 0 instead -- every sprite in this scene uses
+    ; the same four colours in our port.
+    .byte $0F, $30, $10, $00            ; sprite palette 0: cursor shading
+    .byte $0F, $30, $30, $30            ; sprite palette 1 (unused)
+    .byte $0F, $30, $30, $30            ; sprite palette 2 (unused)
+    .byte $0F, $30, $30, $30            ; sprite palette 3 (unused)
