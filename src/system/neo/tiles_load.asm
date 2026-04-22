@@ -1,10 +1,15 @@
 ; ---------------------------------------------------------------------------
 ; tiles_load.asm - Neo6502 HAL_LoadTiles implementation.
 ; ---------------------------------------------------------------------------
-; Loads tiles.gfx into the Neo's gfxObjectMemory in a single API call.
-; The file holds 128 16x16 tile images (FF1 font slots $00..$7F packed
-; upper-left of each) plus the 16x16 cursor sprite at the end; the build
-; script chr_to_neo_gfx.py produces it from bank_09 data + cursor CHR.
+; Loads the menu/font tileset (tiles_font.gfx) into the Neo's
+; gfxObjectMemory in a single API call. The file holds 128 16x16 tile
+; images (FF1 font slots $00..$7F packed upper-left of each) plus the
+; 16x16 cursor sprite at the end; the build script chr_to_neo_gfx.py
+; produces it from bank_09 data + cursor CHR.
+;
+; This is the boot-time load. Runtime tileset switching (e.g. to the
+; overworld tiles) goes through HAL_LoadTileset in tileset.asm, which
+; loads tiles_ow.gfx over the top of the same memory region.
 ;
 ; API pattern: Group $03 Function $02 "Load File". Parameters:
 ;   P0/P1  filename pointer (length-prefixed Pascal string)
@@ -29,8 +34,8 @@ API_FN_LOAD_FILENAME = $02
 .segment "RODATA"
 
 tiles_filename:
-    .byte 9
-    .byte "tiles.gfx"
+    .byte 14
+    .byte "tiles_font.gfx"
 
 .segment "CODE"
 

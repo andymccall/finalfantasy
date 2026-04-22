@@ -19,6 +19,7 @@
 .import HAL_FlushNametable
 .import HAL_LoadTiles
 .import HAL_PaletteInit
+.import HAL_SetTileMode
 
 .export HAL_Init
 .export HAL_WaitVblank
@@ -75,7 +76,9 @@ last_frame_count: .res 4
 
     jsr HAL_PaletteInit                 ; program Neo palette slots 0..3 for FF1 menu colours
     jsr HAL_PPUInit
-    jsr HAL_LoadTiles                   ; loads combined tiles.gfx (tiles + cursor sprite)
+    jsr HAL_LoadTiles                   ; loads tiles_font.gfx (font tiles + cursor sprite)
+    lda #0                              ; menu mode -- NES $80..$FF -> tile id byte-$80
+    jsr HAL_SetTileMode
     rts
 .endproc
 

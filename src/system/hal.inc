@@ -61,6 +61,22 @@
 ;                         host's tile/character memory. Subsequent mirror
 ;                         bytes within the font's source range render with
 ;                         FF1 glyphs. Clobbers A/X/Y.
+;   HAL_LoadTileset    -- A = tileset id. Swap the resident tileset.
+;                         IDs: 0 = font/menu, 1 = overworld map.
+;                         Neo does a Group $03 Load File into
+;                         gfxObjectMemory; X16 is a no-op after boot
+;                         (both tilesets already uploaded to disjoint
+;                         VRAM regions). Clobbers A/X/Y.
+;   HAL_SetTileMode    -- A = tile-mode id. Tells ppu_flush how to map
+;                         nametable bytes to host tile slots.
+;                         0 = menu  (NES $00..$7F -> blank,
+;                                    NES $80..$FF -> tile id byte-$80)
+;                         1 = map   (NES $00..$7F -> tile id byte,
+;                                    NES $80..$FF -> unused).
+;                         Also disables the attribute-group gating used
+;                         by the intro-story fade on Neo -- map mode
+;                         draws every cell unconditionally.
+;                         Clobbers A/X/Y.
 ;   HAL_PollJoy        -- sample the host's current controller/keyboard
 ;                         state and return an 8-bit NES-joypad mask in A:
 ;                           bit 0 Right, bit 1 Left, bit 2 Down, bit 3 Up,
@@ -84,4 +100,6 @@
 .import HAL_APU_4014_Write
 .import HAL_APU_4015_Write
 .import HAL_LoadTiles
+.import HAL_LoadTileset
+.import HAL_SetTileMode
 .import HAL_PollJoy

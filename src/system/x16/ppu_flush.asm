@@ -45,6 +45,7 @@
 ; ---------------------------------------------------------------------------
 
 .import ppu_nt_mirror
+.import tile_mode                       ; 0 = menu, 1 = map (see tileset.asm)
 
 .export HAL_FlushNametable
 
@@ -139,8 +140,30 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
     ; --- write 32 (tile_id, attr) pairs for this row ------------------------
     ldy #0
 @col_loop:
-    ; --- byte 0: tile id = mirror byte directly -----------------------------
+    ; --- byte 0: tile id from mirror, remapped by tile_mode -----------------
+    ; Menu mode: NES $00..$7F -> blank (VERA slot 0 holds the zero tile, but
+    ;   slots $01..$7F now carry map-tile CHR since HAL_UploadMapTiles ran
+    ;   at boot; we must force the id to 0 so menu screens show a clean
+    ;   background rather than map terrain).
+    ; Map mode: NES $00..$7F pass through as VERA slot = byte; $80..$FF
+    ;   unused on maps, force to blank.
     lda (flush_ptr), y
+    pha
+    lda tile_mode
+    bne @mode_map
+    pla
+    cmp #$80
+    bcs @store_tile                     ; $80..$FF: pass through (font)
+    lda #0                              ; $00..$7F: blank
+    bra @store_tile
+
+@mode_map:
+    pla
+    cmp #$80
+    bcc @store_tile                     ; $00..$7F: pass through (map tile)
+    lda #0                              ; $80..$FF: unused on maps, blank
+
+@store_tile:
     sta VERA_DATA0
 
     ; --- byte 1: palette_offset << 4 ---------------------------------------

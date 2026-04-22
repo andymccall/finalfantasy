@@ -49,6 +49,7 @@
 .import UpdateJoy
 .import PlaySFX_MenuSel
 .import PlaySFX_MenuMove
+.import EnterMapTest
 
 .importzp text_ptr
 .importzp tmp
@@ -96,18 +97,17 @@ BANK_THIS = $00
 
 ; EnterNewGame is the host-side replacement for the bank_0F.asm:157-161
 ; sequence (SwapPRG_L + NewGamePartyGeneration + NewGame_LoadStartingStats).
-; NewGame_LoadStartingStats and everything downstream (overworld start)
-; isn't wired up yet, so we spin on HAL_WaitVblank after the loop returns.
-; The DMA push after the return clears any stale sprites left in the
-; host sprite plane (e.g. the title-screen cursor).
+; NewGame_LoadStartingStats and the real overworld enter aren't wired
+; up; we run the map-tile sampler harness instead so the runtime
+; tileset swap and map-mode ppu_flush path get exercised. The DMA push
+; after party-gen clears any stale sprites (e.g. the name-input cursor)
+; before the map harness paints its tile atlas.
 EnterNewGame:
     jsr NewGamePartyGeneration
     jsr ClearOAM
     lda #>oam
     jsr HAL_APU_4014_Write
-@spin:
-    jsr HAL_WaitVblank
-    bra @spin
+    jmp EnterMapTest                    ; tail-jump: harness spins forever
 
 LoadNewGameCHRPal:
     rts

@@ -96,6 +96,7 @@
 .import ppu_nt_mirror
 .import nt_dirty
 .import row_dirty
+.import tile_mode                       ; 0 = menu, 1 = map (see tileset.asm)
 
 .export HAL_FlushNametable
 
@@ -291,13 +292,34 @@ flush_row_shift: .res 1                 ; (row & 2) << 1: 0 or 4
 @col_loop:
     lda (flush_ptr), y
 
+    ; --- tile-mode dispatch ------------------------------------------------
+    ; Menu mode (0): NES $80..$FF -> tile id byte-$80, $00..$7F -> blank.
+    ; Map mode  (1): NES $00..$7F -> tile id byte, $80..$FF -> unused.
+    ; Map mode also bypasses the attribute-group gate that the intro-story
+    ; fade relies on. Two bcc/bcs branches route through @skip_cell_trampoline
+    ; because @skip_cell sits past the -128 branch range below.
+    pha
+    lda tile_mode
+    bne @mode_map
+    pla
     cmp #FF1_FONT_BASE
-    bcc @skip_cell                      ; < $80 : blank (ClearNT sentinel)
+    bcc @skip_cell_trampoline           ; < $80 : blank (ClearNT sentinel)
     sec
     sbc #FF1_FONT_BASE                  ; tile id = byte - $80 (range $00..$7F)
-
     pha                                 ; stash tile id across API setup
+    bra @menu_gate
 
+@mode_map:
+    pla
+    cmp #FF1_FONT_BASE
+    bcs @skip_cell_trampoline           ; >= $80 : unused on maps
+    pha                                 ; tile id = NES byte, 0..$7F
+    jmp @draw_tile                      ; skip attr-group gate
+
+@skip_cell_trampoline:
+    jmp @skip_cell
+
+@menu_gate:
     ; --- blue-fill fast path: NES tile $FF (Neo id $7F) bypasses the gate --
     ; It's the background fill whose pixels are all nibble 2 (blue) in every
     ; NES palette group, so it should always be visible.

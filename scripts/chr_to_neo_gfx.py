@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """
-chr_to_neo_gfx.py - Pack FF1's menu CHR + cursor CHR as a Neo6502 .gfx.
+chr_to_neo_gfx.py - Pack FF1 CHR + cursor CHR as a Neo6502 .gfx.
 
-Output layout (single .gfx, loaded to gfxObjectMemory once at boot):
+Emits one of two tilesets based on --mode:
+  font  : FF1's menu font glyphs (bank_09, offset $800, 128 tiles).
+          Each glyph lives in the upper-left 8x8 of its 16x16 image.
+  map   : FF1's overworld BG CHR (bank_02, offset $0, 128 tiles).
+          Each NES 8x8 tile lives in the upper-left 8x8 of a 16x16
+          image, same as font -- HAL_FlushNametable paints cells on
+          an 8-pixel grid and the transparent quadrants overlap
+          cleanly with neighbours.
+
+Output layout (single .gfx, loaded to gfxObjectMemory at runtime):
     [0..255]  256-byte header
         [0]   = 1             (format version)
-        [1]   = 128           (16x16 tiles: FF1 nametable $80..$FF -> ids $00..$7F)
-        [2]   = 1             (16x16 sprites -- the cursor)
-        [3]   = 0             (32x32 sprites)
-    [256..]   128 FF1 tile images (128 bytes each = 16384 bytes)
+        [1]   = 128           (16x16 tile count)
+        [2]   = 1             (16x16 sprite count -- always the cursor)
+        [3]   = 0             (32x32 sprite count)
+    [256..]   128 tile images (128 bytes each = 16384 bytes)
     [..]      1 cursor sprite (128 bytes)
+
+Both modes ship the cursor sprite at the end so HAL_LoadTileset can
+swap the tile region without losing the cursor image.
 
 Note: we cannot add a 129th "blank" tile because Neo Draw Image treats
 image ids >= $80 as sprites, not tiles -- so any attempt to paint
@@ -67,6 +79,11 @@ FF1_TILE_COUNT = 128                # nametable bytes $80..$FF -> Neo ids $00..$
 
 FONT_MAP = {0: 0, 1: 1, 2: 2, 3: 3}
 
+# Map tiles use all four NES 2bpp values as genuine attribute-group
+# colour indices. Pass through unchanged; the Neo palette is whatever
+# DrawPalette last pushed (Phase 1 flat palette -- see palette.asm).
+MAP_MAP = {0: 0, 1: 1, 2: 2, 3: 3}
+
 # Cursor sprite palette on the title screen is FF1's sprite palette 3:
 # NES $0F/$30/$10/$00 (black / white / light-grey / mid-grey). Our fixed
 # Neo palette is slot 0=black, 1=mid-grey, 2=dark-blue, 3=white, 4=light-grey
@@ -102,14 +119,14 @@ def pack_16x16(pixels16, palette_map):
     return bytes(data)
 
 
-def pack_font_tile(src16):
+def pack_tile_upper_left(src16, palette_map):
     """NES 8x8 tile in the upper-left of a 16x16 image; rest transparent."""
     nes = nes_tile_to_pixels(src16)
     pixels = [[0] * 16 for _ in range(16)]
     for y in range(8):
         for x in range(8):
             pixels[y][x] = nes[y][x]
-    return pack_16x16(pixels, FONT_MAP)
+    return pack_16x16(pixels, palette_map)
 
 
 def pack_cursor(cursor_chr):
@@ -127,22 +144,30 @@ def pack_cursor(cursor_chr):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--font", required=True, help="FF1 font blob (bank_09 data)")
-    ap.add_argument("--font-offset", type=lambda x: int(x, 0), default=0x800)
+    ap.add_argument("--mode", choices=("font", "map"), required=True,
+                    help="which tileset to pack into the tile region")
+    ap.add_argument("--tiles", required=True,
+                    help="source CHR blob (font: bank_09_data.bin; "
+                         "map: bank_02.dat)")
+    ap.add_argument("--tiles-offset", type=lambda x: int(x, 0), default=0,
+                    help="byte offset into the tiles blob "
+                         "(default 0; font mode typically uses 0x800)")
     ap.add_argument("--cursor", required=True, help="cursor CHR (64 bytes)")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
-    with open(args.font, "rb") as f:
-        font_data = f.read()
+    with open(args.tiles, "rb") as f:
+        tile_data = f.read()
     with open(args.cursor, "rb") as f:
         cursor_data = f.read()
 
-    need = args.font_offset + FF1_TILE_COUNT * 16
-    if need > len(font_data):
-        sys.exit(f"{args.font}: need {need:#x} bytes, got {len(font_data):#x}")
+    need = args.tiles_offset + FF1_TILE_COUNT * 16
+    if need > len(tile_data):
+        sys.exit(f"{args.tiles}: need {need:#x} bytes, got {len(tile_data):#x}")
     if len(cursor_data) != 64:
         sys.exit(f"{args.cursor}: expected 64 bytes, got {len(cursor_data)}")
+
+    palette_map = FONT_MAP if args.mode == "font" else MAP_MAP
 
     header = bytearray(HEADER_SIZE)
     header[0] = 1
@@ -153,8 +178,8 @@ def main():
     with open(args.output, "wb") as f:
         f.write(header)
         for t in range(FF1_TILE_COUNT):
-            base = args.font_offset + t * 16
-            f.write(pack_font_tile(font_data[base:base + 16]))
+            base = args.tiles_offset + t * 16
+            f.write(pack_tile_upper_left(tile_data[base:base + 16], palette_map))
         f.write(pack_cursor(cursor_data))
 
 

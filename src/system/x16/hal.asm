@@ -30,6 +30,8 @@
 .import HAL_FlushNametable
 .import HAL_LoadTiles
 .import HAL_SpritesInit
+.import HAL_UploadMapTiles
+.import HAL_SetTileMode
 
 .export HAL_Init
 .export HAL_WaitVblank
@@ -145,7 +147,10 @@ basic_stub_end:
 
     jsr HAL_PPUInit
     jsr HAL_LoadTiles
+    jsr HAL_UploadMapTiles              ; map tiles at VRAM slots $00..$7F
     jsr HAL_SpritesInit
+    lda #0                              ; menu mode -- NES $80..$FF renders as VERA slot = byte
+    jsr HAL_SetTileMode
     rts
 .endproc
 
