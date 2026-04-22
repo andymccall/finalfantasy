@@ -52,6 +52,7 @@
 .export ppu_nt_mirror
 .export palette_ram
 .export nt_dirty
+.export row_dirty
 
 .segment "ZEROPAGE"
 
@@ -69,6 +70,18 @@ nt_dirty:       .res 1                  ; non-zero iff the mirror has been
                                         ; written since the last flush. The
                                         ; HAL flush routine clears this when
                                         ; it has finished painting.
+row_dirty:      .res 30                 ; per-row dirty bits for the 32x30
+                                        ; visible nametable. Each entry is
+                                        ; non-zero iff the corresponding NT
+                                        ; row has cells that changed since
+                                        ; the last flush (either a tile
+                                        ; byte in that row, or an attribute
+                                        ; byte whose metatile covers it).
+                                        ; HALs that can paint partial
+                                        ; frames (Neo) read this to skip
+                                        ; unchanged rows. X16 ignores it
+                                        ; and repaints the full grid via
+                                        ; VERA, which is fast enough.
 
 ; ---------------------------------------------------------------------------
 
@@ -105,6 +118,14 @@ nt_dirty:       .res 1                  ; non-zero iff the mirror has been
     stz palette_ram, x
     dex
     bpl @zap_pal
+
+    ; Start with every row dirty so the first flush paints the whole grid.
+    ldx #29
+@zap_rows:
+    lda #1
+    sta row_dirty, x
+    dex
+    bpl @zap_rows
     rts
 .endproc
 
@@ -184,37 +205,91 @@ nt_dirty:       .res 1                  ; non-zero iff the mirror has been
 @nt_store:
     pla                                 ; restore input byte
     ldy #0
-    sta (ppu_nt_ptr), y
-
-    ; nt_dirty only needs to be set for writes that affect the visible
-    ; 32x30 tile grid -- PPU offsets $000..$3BF within each nametable.
-    ; Attribute-table writes ($3C0..$3FF of each NT) change palette
-    ; selection but not the tile bytes our flush routine looks at, so
-    ; setting nt_dirty for them would force a repaint on every frame
-    ; during the intro-story fade (IntroStory_WriteAttr runs each frame
-    ; and writes only to $23C0..$23FF). That re-introduces the flicker
-    ; from overrun scanout.
+    ; Compare against current mirror byte: if unchanged, skip the dirty
+    ; mark. The store itself is unconditional -- HALs may depend on the
+    ; mirror always being current after a write path runs. Only the
+    ; dirty flags gate on whether the write changed anything.
     ;
-    ; Attribute region: (ppu_addr_hi & $03) == $03 AND ppu_addr_lo >= $C0.
-    ; A must NOT be clobbered on return -- FF1 keeps the byte-to-write in
-    ; A across tight $2007 loops (e.g. EnterIntroStory's LDA #$FF / loop:
-    ; 4x STA $2007 / DEX / BNE), and a real NES STA leaves A untouched.
-    ; We stash A on the stack for the duration of the classification and
-    ; restore it before @advance. X is already saved on entry (phx/plx).
-    pha
+    ; Why the skip matters: FF1's IntroStory_WriteAttr rewrites 8 attr
+    ; bytes every frame; most of those values already match the mirror,
+    ; so marking them dirty would force a full per-frame repaint during
+    ; the intro fade. Gating dirty marks on value-change collapses
+    ; those redundant attr sweeps into no-ops for the Neo HAL (which
+    ; repaints only when nt_dirty / row_dirty are set).
+    cmp (ppu_nt_ptr), y
+    php                                 ; remember Z (set iff value unchanged)
+    sta (ppu_nt_ptr), y
+    plp
+    beq @advance                        ; value unchanged -- don't mark dirty
+    ldx #1
+    stx nt_dirty                        ; signal the HAL flush routine
+
+    ; --- row-dirty tracking -------------------------------------------------
+    ; Classify the write as tile or attr, then mark the appropriate NT row
+    ; (or 4 rows for attr bytes) dirty in row_dirty[]. ppu_addr_hi/lo still
+    ; hold the pre-increment PPU address.
+    ;
+    ; A MUST be preserved on return from HAL_PPU_2007_Write: FF1 holds the
+    ; byte-to-write in A across tight $2007 loops (e.g. EnterIntroStory's
+    ; LDA #$FF / 4x STA $2007 / DEX / BNE). A real NES STA leaves A
+    ; untouched, so we must do the same. Stash A before the classification
+    ; scratchwork and pull it back before falling into @advance.
+    ;
+    ; Tile byte: offset within NT = (ppu_addr_hi & 3) << 8 | ppu_addr_lo.
+    ;   row = offset / 32 = (ppu_addr_hi & 3) << 3 | (ppu_addr_lo >> 5).
+    ; Attr byte: (ppu_addr_hi & 3) == 3 AND ppu_addr_lo >= $C0.
+    ;   index = ppu_addr_lo - $C0 (0..63)
+    ;   attr_row = index >> 3 (0..7); NT rows = attr_row * 4 .. * 4 + 3.
+    pha                                 ; save byte across classification
     lda ppu_addr_hi
     and #$03
     cmp #$03
-    bne @mark_dirty
+    bne @mark_tile_row
     lda ppu_addr_lo
     cmp #$C0
-    bcs @nt_done                        ; attribute byte -- skip nt_dirty
+    bcc @mark_tile_row
+    ; --- attr path: mark 4 consecutive NT rows dirty ------------------------
+    ; base NT row = attr_row * 4 = ((ppu_addr_lo - $C0) >> 3) << 2
+    ;             = (ppu_addr_lo - $C0) >> 1  with low 2 bits masked.
+    sec
+    sbc #$C0                            ; A = attr index 0..63
+    lsr                                 ; >> 1
+    and #$1C                            ; mask to the attr_row * 4 bits
+    tax                                 ; X = base NT row (0/4/8/.../28)
+    lda #1
+    sta row_dirty + 0, x
+    sta row_dirty + 1, x
+    ; attr_row 7 covers NT rows 28..31, but rows 30/31 don't exist in
+    ; the visible grid -- skip those stores when base=28.
+    cpx #28
+    beq @row_done
+    sta row_dirty + 2, x
+    sta row_dirty + 3, x
+    bra @row_done
 
-@mark_dirty:
-    ldx #1
-    stx nt_dirty                        ; signal the HAL flush routine
-@nt_done:
-    pla                                 ; restore caller's A
+@mark_tile_row:
+    ; --- tile path: row = ((hi & 3) << 3) | (lo >> 5) -----------------------
+    lda ppu_addr_lo
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr                                 ; lo >> 5 (0..7)
+    sta ppu_nt_ptr                      ; zp scratch
+    lda ppu_addr_hi
+    and #$03
+    asl
+    asl
+    asl                                 ; (hi & 3) << 3 (0/8/16/24)
+    ora ppu_nt_ptr                      ; row (0..31)
+    cmp #30
+    bcs @row_done                       ; rows 30/31 aren't visible
+    tax
+    lda #1
+    sta row_dirty, x
+
+@row_done:
+    pla                                 ; restore byte into A for caller
     bra @advance
 
     ; --- palette path ------------------------------------------------------
