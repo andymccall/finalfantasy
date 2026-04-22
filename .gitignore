@@ -9,6 +9,9 @@ memory.dump
 # Claude Code workspace / agent state
 .claude/
 
+# Per-session transcript dumps (raw JSONL + digests; kept local only)
+session_dumps/
+
 # Editor / IDE
 .vscode/
 .idea/

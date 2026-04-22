@@ -1,58 +1,60 @@
 ; ---------------------------------------------------------------------------
 ; palette.asm - Neo6502 palette HAL.
 ; ---------------------------------------------------------------------------
-; Neo's graphics plane is 4bpp: every tile pixel indexes a single 16-slot
-; palette (plus 16 additional rows used when a sprite pixel sits on top of
-; a tile pixel -- see the sprite palette block further down).
+; Neo currentPalette has 256 entries, indexed by the full 8-bit value in
+; graphicsMemory. Tile pixels land as $0X (high nibble 0) -- the first 16
+; entries $00..$0F are the "tile palette". Sprite pixels with value Y over
+; a tile pixel X land as $YX, giving 16 rows of 16 sprite colours.
 ;
-; We don't have Neo's 16 slots per NES attribute group, so we run a flat
-; 4-colour palette aligned to how FF1 uses group 3 (the "fully faded in"
-; / border palette). The tile CHR produced by chr_to_neo_gfx.py stores
-; pixels with nibble values 0..3 which index Neo slots 0..3 directly:
+; BG tile-pixel encoding (Phase 2, group-aware)
+; ---------------------------------------------
+; The four OW BG palette groups (from load_map_pal) share black/green on
+; colours 0/1 and differ on colours 2/3. We lay them out contiguously so
+; a tile image's 4bpp nibble = (group << 2) | colour_within_group:
 ;
-;   Neo slot 0 : black              (menu background / transparent)
-;   Neo slot 1 : mid-grey           (menu border shade A / font)
-;   Neo slot 2 : blue               (menu box fill / font background)
-;   Neo slot 3 : white              (menu border shade B / glyph foreground)
-;   Neo slot 4 : light grey         (cursor highlight -- FF1 title-screen
-;                                    sprite palette 3 = $0F/$30/$10/$00)
+;   slot $00..$03  group 0 : $0F $1A $10 $30  (black / dk-green / lt-grey / white)
+;   slot $04..$07  group 1 : $0F $1A $27 $37  (black / dk-green / orange / peach)
+;   slot $08..$0B  group 2 : $0F $1A $31 $21  (black / dk-green / lt-blue / mid-blue)
+;   slot $0C..$0F  group 3 : $0F $1A $29 $19  (black / dk-green / lt-green / mid-grn)
 ;
-; HAL_PalettePush is NOT a no-op: the intro-story fade animates
-; cur_pal + $B (NES palette slot $0B = BG group 2 colour 3) from $01
-; blue through grey shades to white, one step per frame. We hook those
-; writes into Neo's Set Palette call so slot 3 tracks that colour. The
-; tile glyphs rendered in pixel nibble 3 (foreground) then animate from
-; blue through grey to white as FF1 expects. Group 2 is used for the
-; currently-animating row on the NES; group 1 stays "hidden" (colour 3 =
-; $01 blue = same as background); group 3 stays "visible" (colour 3 =
-; $30 white). On Neo we have a single flat palette, so we can only
-; carry ONE of those states at a time in slot 3 -- we carry whatever
-; group 2 last wrote, which is fine during the intro (only one row
-; animates at a time; the rest are gated off by ppu_flush reading the
-; NES attr table). Colour writes to $03/$07/$0F (groups 0/1/3 colour 3)
-; also land in slot 3 so the pre-faded state ($01 blue) is already live
-; before the animation first writes to $0B, and the final $30 white
-; sticks after the fade completes.
+; chr_to_neo_gfx.py bakes each used (tile_id, group) pair as its own
+; 16x16 image with nibbles aligned to the owning group. ppu_flush picks
+; the correct variant per cell via a build-time lookup (see ppu_flush.asm).
 ;
-; Sprite palette: Neo currentPalette has 256 entries, indexed by the
-; full 8-bit value in graphicsMemory. A tile pixel lands as $0X (high
-; nibble 0), so we just need slots $00..$0F. A sprite pixel with value
-; Y over any tile pixel X lands as $YX, so sprite colour Y -> 16 slots
-; $Y0..$YF. To keep the cursor white regardless of what tile is under
-; it, we mirror our tile slots 1..3 across all 16 columns of sprite
-; rows 1..3 (and similarly slot 0 across row 0, which is already black
-; by firmware default but we set it explicitly for sprite-transparent
-; rendering). Rows $4..$F keep the firmware defaults; cursor never
-; uses them.
+; Sprite pixels
+; -------------
+; The cursor and mapman sprites keep their existing 8-slot palette in the
+; high-row replication: for sprite colour N we program sprite rows $N0..$NF
+; to the single RGB the sprite uses. The "sprite" colours (cursor highlight,
+; skin-orange, light-red, opaque black) occupy sprite row indices 1..7 with
+; the following fixed mapping, baked into the composer scripts:
 ;
-; The four NES colours come from LoadBorderPalette_Blue (bank_0F.asm
-; line 10200) and the title-screen background palette -- $0F/$00/$01/$30
-; cover every border tile shade plus the glyph foreground. RGB values
-; are quantised from the Nestopia reference palette, matching what the
-; X16 HAL does (src/system/x16/palette.asm).
+;   sprite-nibble 0 : transparent (row $0X path uses tile slot $0X unchanged)
+;   sprite-nibble 1 : opaque black                (mapman outline)
+;   sprite-nibble 2 : NES $12 dark-blue-1         (mapman body palette 0)
+;   sprite-nibble 3 : NES $30 white               (cursor shade)
+;   sprite-nibble 4 : NES $10 light-grey          (cursor highlight)
+;   sprite-nibble 5 : NES $27 skin-orange         (mapman body palette 1)
+;   sprite-nibble 6 : NES $36 light-red           (mapman highlights)
+;   sprite-nibble 7 : NES $00 mid-grey            (cursor low)
+;
+; Rows 1..7 are each programmed with their RGB across all 16 columns so
+; a sprite pixel renders the same regardless of which tile nibble sits
+; beneath it.
+;
+; HAL_PalettePush
+; ---------------
+; The intro-story fade animates NES palette slot $0B (group 2 colour 3)
+; from blue through grey to white. On Phase 2 we route that write into
+; Neo slot $0B (group 2 colour 3) directly -- slot addressing now lines
+; up with the NES. Writes to other colour-3 slots ($03/$07/$0F) are also
+; forwarded to their matching Neo slots so pre-fade and post-fade steady
+; states land in the right groups. This lets multiple groups hold
+; different colour-3 values simultaneously, which flat-palette Phase 1
+; couldn't do.
 ;
 ; Group 5 Function 32 "Set Palette" parameters:
-;   P0      colour slot (0..15 for our purposes)
+;   P0      colour slot (0..255; we target $00..$0F + sprite rows $10..$7F)
 ;   P1      red   (0..255)
 ;   P2      green (0..255)
 ;   P3      blue  (0..255)
@@ -60,6 +62,8 @@
 
 .export HAL_PalettePush
 .export HAL_PaletteInit
+
+.import tile_mode                       ; 0 = menu, 1 = map (see tileset.asm)
 
 ControlPort          = $FF00
 API_COMMAND          = ControlPort + 0
@@ -71,31 +75,48 @@ API_FN_SET_PALETTE   = $20              ; Function 32
 
 .segment "RODATA"
 
-; (R, G, B) triplets for Neo tile colours 0..3. Each triplet is also
-; replicated across all 16 entries of the matching sprite row ($N0..$NF)
-; at runtime -- see HAL_PaletteInit below.
-palette_rgb:
-    .byte $00, $00, $00                 ; 0 : NES $0F black
-    .byte $75, $75, $75                 ; 1 : NES $00 mid-grey
-    .byte $00, $00, $AB                 ; 2 : NES $01 dark blue
-    .byte $FF, $FF, $FF                 ; 3 : NES $30 white
-    .byte $BC, $BC, $BC                 ; 4 : NES $10 light grey
-                                        ;     (cursor highlight -- title
-                                        ;     screen's sprite palette 3 is
-                                        ;     $0F/$30/$10/$00, see
-                                        ;     LoadBattleSpritePalettes)
-    .byte $CC, $77, $22                 ; 5 : NES $27 skin orange
-                                        ;     (Fighter mapman face/legs,
-                                        ;     OW sprite palette 1 colour 2)
-    .byte $EE, $77, $77                 ; 6 : NES $36 light red
-                                        ;     (Fighter mapman highlights,
-                                        ;     OW sprite palettes 0+1 colour 3)
-    .byte $00, $00, $00                 ; 7 : opaque black
-                                        ;     (mapman outline -- slot 0 is
-                                        ;     transparent for sprite nibble
-                                        ;     0; pixel value 1 resolves here)
+; Tile palette (R, G, B) triplets for Neo slots $00..$0F. Four OW BG
+; groups laid out contiguously; colours 0/1 (black / dark green) are
+; identical across groups, colours 2/3 differ. Nibble value in a tile
+; image = (group << 2) | colour_within_group.
+tile_palette_rgb:
+    ; group 0  ($0F $1A $10 $30)
+    .byte $00, $00, $00                 ; $00 : NES $0F black
+    .byte $00, $AA, $00                 ; $01 : NES $1A dark green
+    .byte $BB, $BB, $BB                 ; $02 : NES $10 light grey
+    .byte $FF, $FF, $FF                 ; $03 : NES $30 white
+    ; group 1  ($0F $1A $27 $37)
+    .byte $00, $00, $00                 ; $04 : NES $0F black
+    .byte $00, $AA, $00                 ; $05 : NES $1A dark green
+    .byte $FF, $AA, $44                 ; $06 : NES $27 orange
+    .byte $FF, $EE, $AA                 ; $07 : NES $37 peach
+    ; group 2  ($0F $1A $31 $21)
+    .byte $00, $00, $00                 ; $08 : NES $0F black
+    .byte $00, $AA, $00                 ; $09 : NES $1A dark green
+    .byte $AA, $EE, $FF                 ; $0A : NES $31 pale blue
+    .byte $33, $BB, $FF                 ; $0B : NES $21 mid blue
+    ; group 3  ($0F $1A $29 $19)
+    .byte $00, $00, $00                 ; $0C : NES $0F black
+    .byte $00, $AA, $00                 ; $0D : NES $1A dark green
+    .byte $BB, $FF, $11                 ; $0E : NES $29 light green
+    .byte $11, $99, $00                 ; $0F : NES $19 mid green
 
-PALETTE_COLOURS = 8
+; Sprite palette (R, G, B) triplets for nibble values 1..7. Row 0 is
+; the transparent path -- not programmed here, tile slot $0X shows
+; through. Each row N is replicated across all 16 sprite columns
+; $N0..$NF so sprite colour N renders identically regardless of the
+; tile pixel underneath.
+sprite_palette_rgb:
+    .byte $00, $00, $00                 ; row 1 : opaque black (mapman outline)
+    .byte $00, $55, $FF                 ; row 2 : NES $12 dark blue (mapman body pal0)
+    .byte $FF, $FF, $FF                 ; row 3 : NES $30 white (cursor shade)
+    .byte $BB, $BB, $BB                 ; row 4 : NES $10 light grey (cursor highlight)
+    .byte $FF, $AA, $44                 ; row 5 : NES $27 orange (mapman body pal1)
+    .byte $FF, $DD, $BB                 ; row 6 : NES $36 light peach (mapman highlights)
+    .byte $75, $75, $75                 ; row 7 : NES $00 mid-grey (cursor low)
+
+TILE_COLOURS   = 16
+SPRITE_COLOURS = 7
 
 ; NES colour-index -> (R, G, B) lookup. Used by HAL_PalettePush to
 ; reprogram Neo slot 3 when FF1 writes a new value to any BG colour-3
@@ -175,71 +196,111 @@ nes_to_rgb_lut:
 
 .segment "BSS"
 
-pal_row:   .res 1                       ; current colour row (0..3)
-pal_col:   .res 1                       ; sprite-column iterator (0..15)
-pal_slot:  .res 1                       ; composed slot byte
+pal_slot:   .res 1                      ; Neo palette slot byte
+pal_off:    .res 1                      ; byte offset into RGB source (triplet base)
+pal_idx:    .res 1                      ; loop index (tile slot or sprite row)
+pal_col:    .res 1                      ; sprite column 0..15
+pal_colour: .res 1                      ; NES colour index for push_bg_slot
 
 .segment "CODE"
 
 ; HAL_PaletteInit -----------------------------------------------------------
-; For each of our 4 tile colours N:
-;   - program tile slot $0N (= sprite-transparent path)
-;   - program sprite slots $N0..$NF so sprite colour N renders correctly
-;     regardless of what tile pixel sits underneath.
+; Phase 2 layout:
+;   - program 16 tile slots $00..$0F from tile_palette_rgb (4 groups x 4).
+;   - program 7 sprite rows 1..7, each replicated across all 16 columns,
+;     from sprite_palette_rgb.
 .proc HAL_PaletteInit
-    stz pal_row
-@row_loop:
-    ; --- tile slot $0N ------------------------------------------------------
-    lda pal_row                         ; slot = 0..3
+    ; --- tile slots $00..$0F ------------------------------------------------
+    stz pal_idx
+    stz pal_off
+@tile_loop:
+    lda pal_idx
     sta pal_slot
-    jsr push_one
+    ldx pal_off
+    lda tile_palette_rgb + 0, x
+    sta @r + 1
+    lda tile_palette_rgb + 1, x
+    sta @g + 1
+    lda tile_palette_rgb + 2, x
+    sta @b + 1
+@r: lda #0
+@g: ldy #0
+@b: ldx #0
+    jsr push_slot
 
-    ; --- sprite slots $N0..$NF ----------------------------------------------
+    lda pal_off
+    clc
+    adc #3
+    sta pal_off
+    inc pal_idx
+    lda pal_idx
+    cmp #TILE_COLOURS
+    bne @tile_loop
+
+    ; --- sprite rows 1..7 (each replicated across 16 columns) ---------------
+    lda #1
+    sta pal_idx
+    stz pal_off                         ; offset into sprite_palette_rgb
+@row_loop:
     stz pal_col
+    ldx pal_off
+    lda sprite_palette_rgb + 0, x
+    sta @sr + 1
+    lda sprite_palette_rgb + 1, x
+    sta @sg + 1
+    lda sprite_palette_rgb + 2, x
+    sta @sb + 1
 @col_loop:
-    lda pal_row
+    lda pal_idx
     asl
     asl
     asl
-    asl                                 ; N << 4
-    ora pal_col                         ; | column
+    asl
+    ora pal_col
     sta pal_slot
-    jsr push_one
+@sr: lda #0
+@sg: ldy #0
+@sb: ldx #0
+    jsr push_slot
+
     inc pal_col
     lda pal_col
     cmp #16
     bne @col_loop
 
-    inc pal_row
-    lda pal_row
-    cmp #PALETTE_COLOURS
+    lda pal_off
+    clc
+    adc #3
+    sta pal_off
+    inc pal_idx
+    lda pal_idx
+    cmp #(SPRITE_COLOURS + 1)
     bne @row_loop
     rts
 .endproc
 
-; push_one ------------------------------------------------------------------
-; Issue one Set Palette call: slot = pal_slot, RGB taken from palette_rgb
-; indexed by pal_row * 3.
-.proc push_one
+; push_slot -----------------------------------------------------------------
+; Issue one Set Palette call.
+;   pal_slot = target slot
+;   A = red, Y = green, X = blue
+.proc push_slot
+    pha
+    tya
+    pha
+    txa
+    pha
 @wait_idle:
     lda API_COMMAND
     bne @wait_idle
 
     lda pal_slot
     sta API_PARAMETERS + 0
-
-    ; x = pal_row * 3  (0/3/6/9 for 4 rows)
-    lda pal_row
-    asl                                 ; *2
-    clc
-    adc pal_row                         ; *3
-    tax
-    lda palette_rgb + 0, x
-    sta API_PARAMETERS + 1
-    lda palette_rgb + 1, x
-    sta API_PARAMETERS + 2
-    lda palette_rgb + 2, x
+    pla                                 ; blue
     sta API_PARAMETERS + 3
+    pla                                 ; green
+    sta API_PARAMETERS + 2
+    pla                                 ; red
+    sta API_PARAMETERS + 1
 
     lda #API_FN_SET_PALETTE
     sta API_FUNCTION
@@ -258,69 +319,79 @@ pal_slot:  .res 1                       ; composed slot byte
 ;       bits 1:0 = colour within group)
 ;   Must preserve A, X, Y.
 ;
-; We forward writes to any BG colour-3 slot ($03/$07/$0B/$0F) into Neo
-; palette slot 3. During the intro-story fade, FF1 animates cur_pal+$B
-; per frame (IntroStory_AnimateRow) and no other BG palette is touched,
-; so Neo slot 3 tracks the grey cycle. On the title screen and in menus
-; DrawPalette writes all 32 slots in order; slot $0F (group 3 colour 3)
-; is written LAST and carries $30 white, so Neo slot 3 settles on white
-; for post-fade steady state. Sprite-palette slots ($10+) are filtered
-; out -- HAL_PaletteInit preloads Neo sprite rows with the cursor
-; highlight.
+; Neo tile slots $00..$0F line up with NES BG palette slots $00..$0F,
+; so BG writes forward 1:1 into their matching Neo slot. Sprite-palette
+; writes ($10..$1F) are filtered out -- sprite colours are baked at
+; build-time into fixed Neo sprite rows.
 ;
-; This is intentionally narrow: it makes the intro fade work without
-; breaking anything else. Later screens may need more palette slots to
-; flow through (battles, magic colour cycling); extend the filter when
-; we hit those. Sprite palette writes ($10..$1F) are already ignored
-; -- HAL_PaletteInit preloads Neo slot 4 with the cursor highlight,
-; which is sufficient for the title-screen cursor.
-;
-; Implementation:
-;   1. Save caller A/X/Y.
-;   2. Early-exit unless X == $0B.
-;   3. Look up (R, G, B) for NES colour A via nes_to_rgb_lut.
-;   4. Issue Set Palette against Neo slot 3 with that RGB.
-;   5. Restore A/X/Y.
+; Font-mode mirror: font-mode tile images encode glyph nibbles as 0..3
+; (targeting Neo slots $00..$03). On menu screens FF1 puts text in
+; nametable regions attributed as group 3 (ClearNT fills the attribute
+; table with $FF), so the "correct" colours for those glyphs live in
+; NES BG slot $0C..$0F. We mirror group-3 writes into Neo slot $00..$03
+; whenever tile_mode = 0 (menu), so last-write-wins lands group 3's
+; menu-blue/white on the font nibbles. In map mode we skip the mirror:
+; slots $00..$0F all hold their own group's colour for the per-variant
+; tile images.
 .proc HAL_PalettePush
     phy
     phx
     pha
 
-    ; --- slot filter: any NES BG colour-3 slot ($03/$07/$0B/$0F) -----------
-    ; All four are "foreground" slots in their respective palette groups. On
-    ; a real NES they carry different values per group (group 3 white, group
-    ; 1 blue during fade, etc). We can only carry ONE of them in Neo slot 3,
-    ; so we forward all four writes and let last-writer-win. During the
-    ; intro-story fade only $0B is touched per-frame, so the slot tracks the
-    ; grey-cycle as intended. On the title screen, DrawPalette writes all 32
-    ; slots in order, so $0F (group 3 colour 3 = $30 white) lands LAST and
-    ; Neo slot 3 settles at white -- which is what the menu text needs.
-    txa
-    and #$03                            ; isolate low 2 bits (colour within group)
-    cmp #$03
-    bne @done                           ; not a colour-3 slot -> ignore
+    sta pal_colour                      ; stash NES colour index for push_bg_slot
+
     txa
     and #$10
-    bne @done                           ; sprite-palette slot ($10+) -> ignore
+    beq @bg_write
+    jmp @done                           ; sprite-palette slot ($10+) -> ignore
+@bg_write:
 
-    ; --- wait for API idle before we start scribbling parameters -----------
+    ; --- primary 1:1 forward: Neo slot $0X = NES BG slot $0X ---------------
+    txa
+    and #$0F
+    sta pal_slot
+    jsr push_bg_slot
+
+    ; --- font-mode mirror: NES $0C..$0F -> Neo $00..$03 --------------------
+    lda tile_mode
+    bne @done                           ; map mode: no mirror
+    txa
+    and #$0C
+    cmp #$0C
+    bne @done                           ; not group 3: no mirror
+
+    txa
+    and #$03                            ; mirror slot $00..$03
+    sta pal_slot
+    jsr push_bg_slot
+
+@done:
+    pla
+    plx
+    ply
+    rts
+.endproc
+
+; push_bg_slot --------------------------------------------------------------
+; Issue one Set Palette call.
+;   pal_slot   = target Neo slot (0..$0F)
+;   pal_colour = NES colour index (0..$3F)
+; Clobbers A; preserves X, Y.
+.proc push_bg_slot
+    phx
 @wait_idle:
     lda API_COMMAND
     bne @wait_idle
 
-    ; --- slot = Neo palette slot 3 -----------------------------------------
-    lda #$03
+    lda pal_slot
     sta API_PARAMETERS + 0
 
-    ; --- look up RGB from NES colour index (top of stack) -------------------
-    pla                                 ; A = NES colour index
-    pha                                 ; keep a copy for the restore
-    and #$3F                            ; mask emphasis bits
-    sta pal_slot                        ; reuse as scratch: n
-    ; y = n * 3
-    asl                                 ; n * 2
+    lda pal_colour
+    and #$3F
+    sta pal_slot                        ; scratch: n
+    asl                                 ; *2
     clc
-    adc pal_slot                        ; n * 3
+    adc pal_slot                        ; *3
     tax
     lda nes_to_rgb_lut + 0, x
     sta API_PARAMETERS + 1
@@ -336,10 +407,6 @@ pal_slot:  .res 1                       ; composed slot byte
 @wait_done:
     lda API_COMMAND
     bne @wait_done
-
-@done:
-    pla                                 ; restore caller's A
-    plx                                 ; restore caller's X
-    ply                                 ; restore caller's Y
+    plx
     rts
 .endproc
