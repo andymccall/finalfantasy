@@ -7,6 +7,13 @@
 ; ---------------------------------------------------------------------------
 
 .import AM3_Init
-; Additional entries (AM3_SwitchBank / AM3_RestoreBank / AM3_CallBanked /
-; AM3_CopyFromBank) will be added to this import block when their bodies
-; land in am3.asm.
+.import AM3_LoadBanks
+.import AM3_SwitchBank
+.import AM3_RestoreBank
+.import AM3_CallBanked
+.import AM3_CopyFromBank
+
+; ZP pointers used by AM3_CopyFromBank. Callers populate these before the
+; call: am3_src_ptr -> source in $A000-$BFFF, am3_dst_ptr -> resident dst.
+.importzp am3_src_ptr
+.importzp am3_dst_ptr

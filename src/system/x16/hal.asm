@@ -111,7 +111,8 @@ basic_stub_end:
 .segment "CODE"
 
 .proc HAL_Init
-    jsr AM3_Init                        ; DIAGNOSTIC: now writes 1 not 0
+    jsr AM3_Init
+    jsr AM3_LoadBanks                   ; copy BANKED_02 image into bank 2
     stz VERA_CTRL                       ; DCSEL=0, ADDRSEL=0
 
     ; --- 2x display scale: 320x240 effective, closer to NES 256x240 ---------
