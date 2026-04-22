@@ -20,11 +20,14 @@ Output layout (single .gfx, loaded to gfxObjectMemory at runtime):
     [0..255]  256-byte header
         [0]   = 1             (format version)
         [1]   = 128           (16x16 tile count)
-        [2]   = N             (16x16 sprite count: 1 cursor, +8 mapman in map mode)
+        [2]   = N             (16x16 sprite count: 1 cursor, +8 mapman in
+                              map mode, +24 class portraits in font mode)
         [3]   = 0             (32x32 sprite count)
     [256..]   128 tile images (128 bytes each = 16384 bytes)
     [..]      1 cursor sprite (128 bytes)
     [..]      (map mode) 8 mapman pose images (128 bytes each)
+    [..]      (font mode + --classes) 12 class portraits, each as
+              top + bottom 16x16 sprite (24 * 128 bytes = 3072 bytes)
 
 Both modes ship the cursor sprite at the end so HAL_LoadTileset can
 swap the tile region without losing the cursor image. Map mode also
@@ -392,6 +395,8 @@ def main():
     ap.add_argument("--cursor", required=True, help="cursor CHR (64 bytes)")
     ap.add_argument("--mapman", help="precomposed mapman poses (8 * 128 bytes, "
                                       "map/map-groups only; appended after cursor)")
+    ap.add_argument("--classes", help="precomposed class portraits (24 * 128 "
+                                       "bytes, font mode only; appended after cursor)")
     ap.add_argument("--owmap", help="bank_owmap.dat (map-groups only)")
     ap.add_argument("--owtileset", help="lut_ow_tileset.dat (map-groups only)")
     ap.add_argument("--lut-output", help="path to write 256-byte (tile,group) "
@@ -420,6 +425,16 @@ def main():
             sys.exit(f"{args.mapman}: expected {8 * IMG16_BYTES} bytes, "
                      f"got {len(mapman_data)}")
 
+    classes_data = b""
+    if args.classes:
+        if args.mode != "font":
+            sys.exit("--classes only valid for font mode")
+        with open(args.classes, "rb") as f:
+            classes_data = f.read()
+        if len(classes_data) != 24 * IMG16_BYTES:
+            sys.exit(f"{args.classes}: expected {24 * IMG16_BYTES} bytes, "
+                     f"got {len(classes_data)}")
+
     if args.mode == "map-groups":
         if not (args.owmap and args.owtileset and args.lut_output):
             sys.exit("--mode map-groups requires --owmap, --owtileset, --lut-output")
@@ -438,7 +453,7 @@ def main():
 
     palette_map = FONT_MAP if args.mode == "font" else MAP_MAP
 
-    sprite_count = 1 + (8 if mapman_data else 0)
+    sprite_count = 1 + (8 if mapman_data else 0) + (24 if classes_data else 0)
 
     header = bytearray(HEADER_SIZE)
     header[0] = 1
@@ -454,6 +469,8 @@ def main():
         f.write(pack_cursor(cursor_data))
         if mapman_data:
             f.write(mapman_data)
+        if classes_data:
+            f.write(classes_data)
 
 
 if __name__ == "__main__":

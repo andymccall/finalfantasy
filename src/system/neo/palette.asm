@@ -35,10 +35,14 @@
 ;   sprite-nibble 3 : NES $30 white               (cursor shade)
 ;   sprite-nibble 4 : NES $10 light-grey          (cursor highlight)
 ;   sprite-nibble 5 : NES $27 skin-orange         (mapman body palette 1)
-;   sprite-nibble 6 : NES $36 light-red           (mapman highlights)
+;   sprite-nibble 6 : NES $36 light-red           (mapman highlights / class pal-1 peach)
 ;   sprite-nibble 7 : NES $00 mid-grey            (cursor low)
+;   sprite-nibble 8 : NES $28 yellow              (class palette 0 light)
+;   sprite-nibble 9 : NES $18 dark-yellow         (class palette 0 dark)
+;   sprite-nibble $A: NES $21 light-blue          (class palette 0 accent)
+;   sprite-nibble $B: NES $16 red                 (class palette 1 dark)
 ;
-; Rows 1..7 are each programmed with their RGB across all 16 columns so
+; Rows 1..$B are each programmed with their RGB across all 16 columns so
 ; a sprite pixel renders the same regardless of which tile nibble sits
 ; beneath it.
 ;
@@ -117,9 +121,13 @@ sprite_palette_rgb:
     .byte $FF, $AA, $44                 ; row 5 : NES $27 orange (mapman body pal1)
     .byte $FF, $DD, $BB                 ; row 6 : NES $36 light peach (mapman highlights)
     .byte $75, $75, $75                 ; row 7 : NES $00 mid-grey (cursor low)
+    .byte $FF, $BB, $00                 ; row 8 : NES $28 yellow (class pal0 light)
+    .byte $AA, $77, $00                 ; row 9 : NES $18 dark yellow (class pal0 dark)
+    .byte $33, $BB, $FF                 ; row $A: NES $21 light blue (class pal0 accent)
+    .byte $FF, $33, $00                 ; row $B: NES $16 red (class pal1 dark)
 
 TILE_COLOURS   = 16
-SPRITE_COLOURS = 7
+SPRITE_COLOURS = 11
 
 ; NES colour-index -> (R, G, B) lookup. Used by HAL_PalettePush to
 ; reprogram Neo slot 3 when FF1 writes a new value to any BG colour-3

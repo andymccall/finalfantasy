@@ -365,11 +365,18 @@ $(NEO_MAPMAN_POSES): $(NEO_MAPMAN_CONV) $(MAPMAN_CHR)
 	@mkdir -p $(dir $@)
 	python3 $(NEO_MAPMAN_CONV) $(MAPMAN_CHR) $@
 
-$(NEO_TILES_FONT_GFX): $(NEO_TILES_CONV) $(FF1_FONT_RAW) $(CURSOR_CHR)
+NEO_CLASS_SPRITES := $(BUILDDIR)/neo/class_sprites.bin
+NEO_CLASS_CONV    := $(SCRIPTDIR)/class_to_neo_sprites.py
+
+$(NEO_CLASS_SPRITES): $(NEO_CLASS_CONV) $(FF1_FONT_RAW)
+	@mkdir -p $(dir $@)
+	python3 $(NEO_CLASS_CONV) $(FF1_FONT_RAW) "$(FF1_BANK_09_ASM)" $@
+
+$(NEO_TILES_FONT_GFX): $(NEO_TILES_CONV) $(FF1_FONT_RAW) $(CURSOR_CHR) $(NEO_CLASS_SPRITES)
 	@mkdir -p $(dir $@)
 	python3 $(NEO_TILES_CONV) --mode font \
 	    --tiles $(FF1_FONT_RAW) --tiles-offset $(FF1_FONT_OFF) \
-	    --cursor $(CURSOR_CHR) --output $@
+	    --cursor $(CURSOR_CHR) --classes $(NEO_CLASS_SPRITES) --output $@
 
 $(NEO_TILES_OW_GFX) $(NEO_TILES_OW_LUT) &: $(NEO_TILES_CONV) $(FF1_MAP_OW_RAW) $(CURSOR_CHR) $(NEO_MAPMAN_POSES) $(NEO_OWMAP) $(NEO_OWTILESET)
 	@mkdir -p $(dir $(NEO_TILES_OW_GFX))

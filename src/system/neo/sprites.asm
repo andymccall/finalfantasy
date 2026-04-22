@@ -32,7 +32,23 @@
 ;     UL=$04 + DR_attr.6=0 -> U0;   =1 -> U1
 ;     UL=$00 + DR_attr.6=0 -> D0;   =1 -> D1
 ;
-; Neo sprite image indices: cursor = 0, mapman poses = 1..8.
+; Neo sprite image indices:
+;   map mode  (sprite_mode=0): cursor = 0, mapman poses = 1..8.
+;   font mode (sprite_mode=1): cursor = 0, class N top = 1 + N*2,
+;                              class N bot = 2 + N*2 (classes 0..11).
+;
+; Class sprite layout: FF1 party-gen draws each class as a 2x3 grid of
+; 8x8 NES tiles (UL, UR, ML, MR, DL, DR) at tile IDs class*$20..+5. On
+; Neo we compose that into two stacked 16x16 sprites (top = UL+UR+ML+MR,
+; bot = DL+DR over transparent bottom half). Per-class palette is baked
+; in at compose time (see scripts/class_to_neo_sprites.py).
+;
+; FF1 OAM during party-gen: 4 characters each get 6 OAM slots (24 total).
+; UL's NES (X, Y) is at slots base+3, base+0. UL tile at base+1 gives
+; class*$20; the top Neo sprite is placed at that position, the bot at Y+16.
+;
+; Neo slot plan in font mode: cursor=0; character N (0..3) top=2+N*2,
+; bot=2+N*2+1 -> slots 2..9 used. Cursor + class coexist (cursor is slot 0).
 ;
 ; Coord math: the 32x30 NES viewport sits inside the 320x240 plane
 ; with a 32-pixel horizontal gutter (see ppu_flush.asm). NES sprite Y
@@ -65,6 +81,10 @@ MAPMAN_SPRITE_NUM    = 1
 CURSOR_IMAGE_IDX     = 0
 MAPMAN_IMAGE_BASE    = 1
 
+; Class-mode slot plan: character N (0..3) top=2+N*2, bot=2+N*2+1.
+CLASS_SPRITE_BASE    = 2
+CLASS_CHARS          = 4
+CLASS_IMAGE_BASE     = 1                ; class 0 top image id
 GUTTER_X             = 32               ; must match ppu_flush.asm
 
 ; How many 4-byte OAM records to scan per flush. 8 blocks = 32 sprites
@@ -72,10 +92,21 @@ GUTTER_X             = 32               ; must match ppu_flush.asm
 ; a future screen draws a lot more.
 OAM_RECORDS_WALKED   = 32
 
+SPRITE_MODE_MAPMAN   = 0
+SPRITE_MODE_CLASS    = 1
+
 .segment "BSS"
 
 cursor_drawn: .res 1
 mapman_drawn: .res 1
+sprite_mode:  .res 1                    ; 0 = mapman/OW, 1 = class/party-gen
+class_drawn:  .res CLASS_CHARS          ; one flag per party slot
+spr_num:      .res 1                    ; emit_class scratch
+oam_base:     .res 1
+ul_y:         .res 1
+ul_x:         .res 1
+party_slot:   .res 1
+class_idx:    .res 1
 
 .segment "CODE"
 
@@ -89,18 +120,23 @@ mapman_drawn: .res 1
 .endproc
 
 ; HAL_SetSpriteMode ---------------------------------------------------------
-; No-op stub. On Neo, the cursor + mapman + class sprites share firmware
-; image slots loaded by HAL_LoadTileset, so there's no runtime mode flag
-; to flip yet. The class-CHR port will wire this up alongside the
-; firmware sprite-image upload.
+; A = 0 -> mapman dispatch (cursor + mapman walk).
+; A = 1 -> class dispatch (cursor + 4 party-gen class portraits).
 .proc HAL_SetSpriteMode
+    sta sprite_mode
     rts
 .endproc
 
 ; HAL_OAMFlush --------------------------------------------------------------
-; Walk OAM records, dispatching each block to the matching Neo slot.
-; After the walk, hide any slot that wasn't drawn this frame.
+; Dispatch on sprite_mode.
 .proc HAL_OAMFlush
+    lda sprite_mode
+    bne flush_class_mode
+    ; fall through to mapman mode
+.endproc
+
+; --- mapman-mode flush -----------------------------------------------------
+.proc flush_mapman_mode
     stz cursor_drawn
     stz mapman_drawn
 
@@ -165,6 +201,242 @@ mapman_drawn: .res 1
       lda #MAPMAN_SPRITE_NUM
       jsr hide_sprite
 :   rts
+.endproc
+
+; --- class-mode flush ------------------------------------------------------
+; FF1 party-gen stuffs up to 4 characters into OAM, each as 6 consecutive
+; NES sprite slots (UL, UR, ML, MR, DL, DR). UL is at slot base+0 with
+; tile id = class*$20. We walk in steps of 24 OAM bytes (6 * 4) and emit
+; two stacked 16x16 Neo sprites per character. Cursor tiles ($F0..$F3)
+; are recognised as a separate 2x2 block anywhere in OAM.
+.proc flush_class_mode
+    stz cursor_drawn
+    stz class_drawn + 0
+    stz class_drawn + 1
+    stz class_drawn + 2
+    stz class_drawn + 3
+
+    ldx #0                              ; record index
+@walk:
+    txa
+    asl
+    asl                                 ; Y = X * 4
+    tay
+
+    lda oam, y
+    cmp #$EF
+    bcs @next_record                    ; hidden
+
+    iny
+    lda oam, y                          ; UL tile
+    cmp #$F0
+    bcc @maybe_class
+      cmp #$F4
+      bcs @next_record
+      ; cursor 2x2 block
+      lda cursor_drawn
+      bne @skip_cursor
+      dey
+      jsr emit_cursor
+      lda #1
+      sta cursor_drawn
+@skip_cursor:
+      inx
+      inx
+      inx
+      bra @next_record
+
+@maybe_class:
+    ; Non-cursor tile. A UL of a class portrait has tile id = class * $20.
+    ; Reject if low 5 bits nonzero or class >= 12.
+    pha
+    and #$1F
+    bne @skip_one_pulled
+    pla
+    lsr
+    lsr
+    lsr
+    lsr
+    lsr                                 ; A = class index 0..?
+    cmp #12
+    bcs @skip_one                       ; unknown class
+
+    ; Party slot = assignment counter. We emit class blocks in the order
+    ; they appear in OAM, so use the first free flag.
+    sta class_idx                       ; save class idx (0..11)
+    ldy #0
+@find_slot:
+    lda class_drawn, y
+    beq @have_slot
+    iny
+    cpy #CLASS_CHARS
+    bcc @find_slot
+    bra @skip_block_24                  ; 4 chars already drawn
+
+@have_slot:
+    lda #1
+    sta class_drawn, y
+    lda class_idx                       ; A = class index
+    jsr emit_class                      ; X = record index, Y = party slot
+
+@skip_block_24:
+    ; Class block = 6 NES sprites. Advance 5 here (+1 at @next_record).
+    inx
+    inx
+    inx
+    inx
+    inx
+    bra @next_record
+
+@skip_one_pulled:
+    pla
+@skip_one:
+
+@next_record:
+    inx
+    cpx #OAM_RECORDS_WALKED
+    bcc @walk
+
+    ; --- hide unused slots -------------------------------------------------
+    lda cursor_drawn
+    bne :+
+      lda #CURSOR_SPRITE_NUM
+      jsr hide_sprite
+:
+    ldx #0
+@hide_loop:
+    lda class_drawn, x
+    bne @keep
+      ; hide top + bot for this party slot
+      txa
+      asl                               ; party * 2
+      clc
+      adc #CLASS_SPRITE_BASE
+      pha
+      jsr hide_sprite
+      pla
+      clc
+      adc #1
+      jsr hide_sprite
+@keep:
+    inx
+    cpx #CLASS_CHARS
+    bcc @hide_loop
+    rts
+.endproc
+
+; emit_class: A = class index (0..11), Y = party slot (0..3),
+; X = OAM record index of the UL of the 6-slot class block.
+; Emits two Sprite Set calls (top, bot).
+.proc emit_class
+    sta class_idx
+    sty party_slot
+
+    ; Compute Neo top-sprite number = CLASS_SPRITE_BASE + party*2.
+    tya
+    asl
+    clc
+    adc #CLASS_SPRITE_BASE
+    sta spr_num
+
+    ; Read UL NES Y and X (OAM byte offset = X * 4).
+    txa
+    asl
+    asl
+    tay
+    lda oam, y                          ; UL Y
+    sta ul_y
+    iny
+    iny
+    iny                                 ; UL+3 = UL X
+    lda oam, y
+    sta ul_x
+
+    ; --- top sprite --------------------------------------------------------
+@wait1:
+    lda API_COMMAND
+    bne @wait1
+
+    lda spr_num
+    sta API_PARAMETERS + 0
+
+    lda ul_x
+    clc
+    adc #GUTTER_X
+    sta API_PARAMETERS + 1
+    lda #0
+    adc #0
+    sta API_PARAMETERS + 2
+
+    lda ul_y
+    clc
+    adc #1
+    sta API_PARAMETERS + 3
+    lda #0
+    adc #0
+    sta API_PARAMETERS + 4
+
+    ; image idx = CLASS_IMAGE_BASE + class * 2
+    lda class_idx
+    asl
+    clc
+    adc #CLASS_IMAGE_BASE
+    sta API_PARAMETERS + 5
+    stz API_PARAMETERS + 6              ; no flip
+    lda #7
+    sta API_PARAMETERS + 7              ; anchor / flags
+
+    lda #API_FN_SPRITE_SET
+    sta API_FUNCTION
+    lda #API_GROUP_SPRITES
+    sta API_COMMAND
+@done1:
+    lda API_COMMAND
+    bne @done1
+
+    ; --- bot sprite (same X, Y + 16, image idx + 1, slot + 1) --------------
+@wait2:
+    lda API_COMMAND
+    bne @wait2
+
+    lda spr_num
+    clc
+    adc #1
+    sta API_PARAMETERS + 0
+
+    lda ul_x
+    clc
+    adc #GUTTER_X
+    sta API_PARAMETERS + 1
+    lda #0
+    adc #0
+    sta API_PARAMETERS + 2
+
+    lda ul_y
+    clc
+    adc #17                             ; +1 (NES Y correction) + 16 (stack)
+    sta API_PARAMETERS + 3
+    lda #0
+    adc #0
+    sta API_PARAMETERS + 4
+
+    lda class_idx
+    asl
+    clc
+    adc #CLASS_IMAGE_BASE + 1
+    sta API_PARAMETERS + 5
+    stz API_PARAMETERS + 6
+    lda #7
+    sta API_PARAMETERS + 7
+
+    lda #API_FN_SPRITE_SET
+    sta API_FUNCTION
+    lda #API_GROUP_SPRITES
+    sta API_COMMAND
+@done2:
+    lda API_COMMAND
+    bne @done2
+    rts
 .endproc
 
 ; ---------------------------------------------------------------------------
