@@ -82,7 +82,8 @@ CORE_HOOKED_SRCS = $(SRCDIR)/core/title_copyright.asm \
                    $(SRCDIR)/core/intro_story_joy.asm \
                    $(SRCDIR)/core/draw_2x2_sprite.asm \
                    $(SRCDIR)/core/draw_cursor.asm \
-                   $(SRCDIR)/core/lut_cursor_2x2_sprite_table.asm
+                   $(SRCDIR)/core/lut_cursor_2x2_sprite_table.asm \
+                   $(SRCDIR)/core/pty_gen.asm
 CORE_HOOKED_INCS = $(patsubst $(SRCDIR)/core/%.asm,$(BUILDDIR)/core/%.inc,$(CORE_HOOKED_SRCS))
 
 # --- Shared sources (platform-agnostic) ------------------------------------
@@ -125,6 +126,7 @@ $(BUILDDIR)/x16/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/joy_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/x16/app/sprite_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/x16/app/pty_gen_shim.o: $(CORE_HOOKED_INCS)
 
 $(X16_OUT): $(X16_OBJS) $(X16_CFG)
 	@mkdir -p $(dir $@)
@@ -155,6 +157,7 @@ $(BUILDDIR)/neo/app/title_screen_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/joy_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/intro_story_shim.o: $(CORE_HOOKED_INCS)
 $(BUILDDIR)/neo/app/sprite_shim.o: $(CORE_HOOKED_INCS)
+$(BUILDDIR)/neo/app/pty_gen_shim.o: $(CORE_HOOKED_INCS)
 
 $(NEO_RAW): $(NEO_OBJS) $(NEO_CFG)
 	@mkdir -p $(dir $@)

@@ -24,6 +24,7 @@
 .import DrawPalette
 .import EnterTitleScreen
 .import EnterIntroStory
+.import EnterNewGame
 .import ClearNT
 .import startintrocheck
 .import soft2000
@@ -84,7 +85,10 @@ GameStart_L:
 
 @skip_intro:
     jsr EnterTitleScreen                ; C clear = Continue, C set = New Game
+    bcc @continue
+    jmp EnterNewGame                    ; tail-jump: EnterNewGame spins forever
 
+@continue:
     jsr ClearNT
 @forever:
     jsr HAL_WaitVblank

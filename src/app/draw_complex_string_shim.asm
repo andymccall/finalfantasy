@@ -70,9 +70,9 @@ BANK_MENUS = $00
 ; we pad to the full $60 range with $FF (blank-space tile) so overruns
 ; stay visually inert instead of drawing whatever the next RODATA byte is.
 ;
-; lut_ItemNamePtrTbl is indexed by item_id * 2 (8-bit item IDs). The intro
-; story and title screen never reach a control code that consults it, so
-; zeros are fine.
+; lut_ItemNamePtrTbl is indexed by item_id * 2 (8-bit item IDs). Item IDs
+; $F0..$F5 are the six class names (used by PtyGen_DrawOneText), so we
+; populate those six pointer slots and leave the rest zero.
 lut_DTE1:
     .byte $A8,$FF,$B7,$AB, $B6,$AC,$FF,$B7, $A4,$B5,$FF,$A8, $B2,$A7,$B7,$B1
     .byte $B1,$A8,$A8,$FF, $B2,$A4,$AC,$FF, $B9,$FF,$B0,$B2, $FF,$B6,$FF,$A4
@@ -90,7 +90,53 @@ lut_DTE2:
     .res  $60 - 80, $FF
 
 lut_ItemNamePtrTbl:
-    .res $200
+    .res $F0 * 2                            ; entries $00..$EF unused -- all zero
+    .word name_fighter                      ; $F0 Fighter
+    .word name_thief                        ; $F1 Thief
+    .word name_blackbelt                    ; $F2 Black Belt
+    .word name_redmage                      ; $F3 Red Mage
+    .word name_whitemage                    ; $F4 White Mage
+    .word name_blackmage                    ; $F5 Black Mage
+    .res ($200 - ($F0 + 6) * 2)             ; entries $F6..$FF unused
+
+; Tile encoding: digits '0'..'9' at $80..$89, letters 'A'..'Z' at $8A..$A3,
+; space at $FF, null terminator at $00. Font tiles are styled small-caps
+; so the same glyph covers upper/lowercase.
+; Class names are drawn inside a 10-wide box (~8-char interior). Keeping
+; each string short avoids overrun onto the box border.
+F_ = $8F
+I_ = $92
+G_ = $90
+H_ = $91
+T_ = $9D
+E_ = $8E
+R_ = $9B
+B_ = $8B
+L_ = $95
+A_ = $8A
+C_ = $8C
+K_ = $94
+N_ = $97
+U_ = $9E
+M_ = $96
+S_ = $9C
+P_ = $99
+W_ = $A0
+D_ = $8D
+O_ = $98
+
+name_fighter:
+    .byte F_,I_,G_,H_,T_,E_,R_, $00
+name_thief:
+    .byte T_,H_,I_,E_,F_, $00
+name_blackbelt:
+    .byte B_,L_,A_,C_,K_, B_,T_, $00       ; abbreviated to fit
+name_redmage:
+    .byte R_,E_,D_, M_,A_,G_, $00
+name_whitemage:
+    .byte W_,H_,T_, M_,A_,G_, $00
+name_blackmage:
+    .byte B_,L_,K_, M_,A_,G_, $00
 
 .segment "CODE"
 

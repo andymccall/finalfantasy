@@ -21,6 +21,7 @@
 .export char_index
 .export format_buf
 .export ch_name, ch_class, ch_ailments, ch_weapons, ch_armor, ch_spells
+.export ptygen
 .export respondrate, cursor
 .export joy, joy_a, joy_b, joy_start, joy_select, joy_prevdir, joy_ignore
 .export spr_x, spr_y, sprindex
@@ -94,6 +95,11 @@ ch_ailments: .res $100
 ch_weapons:  .res $100
 ch_armor:    .res $100
 ch_spells:   .res $100
+
+; --- Party-generation scratch --------------------------------------------
+; 64 bytes, 16 per character. Field layout (from FF1's variables.inc) is
+; defined as constants in pty_gen_shim where they're consumed.
+ptygen:          .res 64
 
 ; --- Title-screen state ----------------------------------------------------
 respondrate: .res 1        ; sound-effect speed setting, 0..7
